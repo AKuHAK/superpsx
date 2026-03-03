@@ -142,6 +142,14 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
             uint32_t next = header & 0xFFFFFF;
             total_dma_words += count + 1; /* +1 for the header word */
 
+            /* Prefetch next packet header while we process the current one.
+             * Linked-list traversal is pointer-chasing — each header read
+             * is a cache miss on the R5900's 8KB L1 dcache. Issuing pref
+             * here gives ~50-100 cycles for the load to complete in the
+             * background while we process the current packet. */
+            if (next != 0xFFFFFF && !(next & 0x3))
+                __builtin_prefetch(&psx_ram[next & 0x1FFFFC], 0, 3);
+
             if (count > 256)
             {
                 DLOG("ERROR: Packet count too large (%" PRIu32 "). Aborting chain.\n", count);

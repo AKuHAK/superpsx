@@ -8,22 +8,25 @@ SuperPSX takes a unique approach to PSX emulation: instead of running on a PC, i
 
 ### Key Features
 
-- **Native MIPS Dynarec** — R3000A instructions compiled directly to R5900 code on the EE
-- **GPU Translation** — PSX GP0 commands (polygons, lines, sprites) converted to PS2 GS GIF packets
-- **GTE Emulation** — Geometry Transformation Engine via software emulation
-- **VRAM Shadowing** — Shadow VRAM for accurate CPU-to-VRAM and FillRect operations
-- **CD-ROM / ISO Support** — Load games from CUE/BIN disc images
-- **Scheduler-based Timing** — Event-driven scheduler for interrupts, DMA, and CD-ROM timing
+- **Native MIPS Dynarec** — R3000A instructions compiled directly to R5900 code with 10 pinned registers, 3 dynamic slots, DCE, super-blocks, and direct block linking
+- **GPU Translation** — PSX GP0 commands (polygons, lines, sprites) converted to PS2 GS GIF packets with direct-map texture cache and hardware CLUT via GS indexed modes
+- **GTE via VU0** — 22 GTE commands inlined with optional VU0 macro mode for RTPS/RTPT/MVMVA/lighting pipeline
+- **VRAM Shadowing** — Shadow VRAM for CPU-to-VRAM and V2V transfers with dirty-region tracking
+- **CD-ROM / ISO Support** — Load games from CUE/BIN disc images with ISO 9660 filesystem
+- **Scheduler-based Timing** — Event-driven scheduler for interrupts, DMA, timers, and CD-ROM
+- **SPU with Batch ADSR** — Sound emulation with optimized batch ADSR processing
 - **PCSX2 Development Workflow** — Build and test using PCSX2 with auto-discovered run targets
 
 ### Current Status
 
 - BIOS boots successfully (SCPH1001.BIN)
-- CPU dynarec passes 86%+ of hardware accuracy tests (533 remaining edge cases)
+- CPU dynarec passes all psxtest_cpu tests (0 errors)
+- GTE passes 1150/1150 hardware accuracy tests
 - GPU renders polygons, lines, sprites, textured quads, and semi-transparency
-- GTE handles basic geometry transforms (RTPS, RTPT, NCLIP)
+- Games tested: Crash Bandicoot (~55% speed), Mortal Kombat 2 (playable)
 - CD-ROM reads sectors and supports ISO 9660 filesystem navigation
 - Controller input working via ps2_drivers joystick interface
+- Performance: ~55% of full speed on PCSX2 (30.1ms/frame vs 16.6ms target)
 
 ## AI-Assisted Development
 
@@ -59,13 +62,17 @@ cmake --build build
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `ENABLE_PSX_TLB` | `OFF` | TLB fast-path for RAM (experimental) |
 | `ENABLE_VRAM_DUMP` | `OFF` | Enable VRAM dumping (reduces performance) |
 | `ENABLE_HOST_LOG` | `ON` | Enable host logging via `printf` |
 | `ENABLE_DEBUG_LOG` | `ON` | Enable debug logging per subsystem |
 | `ENABLE_STUCK_DETECTION` | `ON` | Detect infinite loops in emulated code |
 | `ENABLE_PROFILING` | `OFF` | Build with gprof instrumentation (libprofglue) |
 | `ENABLE_LTO` | `OFF` | Enable Link-Time Optimization |
-| `ENABLE_UNLIMITED_SPEED` | `ON` | Run PCSX2 without frame limiting |
+| `ENABLE_DYNAREC_STATS` | `OFF` | Dynarec execution statistics |
+| `ENABLE_SUBSYSTEM_PROFILER` | `ON` | Per-subsystem wall-clock profiler (12 categories) |
+| `ENABLE_TEX_DEBUG` | `OFF` | Texture debug overlay (colored bboxes + printf) |
+| `HEADLESS` | `OFF` | Build without GPU (no-op stubs) |
 
 Example with options:
 
@@ -259,25 +266,38 @@ superpsx/
 │   ├── gpu_state.h         # GPU state definitions
 │   ├── scheduler.h         # Event scheduler
 │   └── ...
-├── src/                    # Source files
+├── src/                    # Source files (~20K lines C99)
 │   ├── main.c              # Entry point
 │   ├── cpu.c               # CPU state & exceptions
-│   ├── dynarec.c           # MIPS-to-MIPS dynamic recompiler
+│   ├── dynarec.h           # Shared dynarec header (EMIT macros, MK_R/I/J)
+│   ├── dynarec_compile.c   # Block compiler, prologue/epilogue, DCE, super-blocks
+│   ├── dynarec_emit.c      # Low-level emitters, pinned reg sync, trampolines
+│   ├── dynarec_insn.c      # Per-instruction emission (ALU, loads, COP0/COP2)
+│   ├── dynarec_memory.c    # Memory access (range checks, cold paths, TLB)
+│   ├── dynarec_run.c       # Block dispatch loop, hash table
+│   ├── dynarec_cache.c     # Block cache, SMC page tracking, direct linking
 │   ├── memory.c            # Memory map & access
 │   ├── hardware.c          # I/O register dispatch
-│   ├── gpu_core.c          # GPU command processing
-│   ├── gpu_gif.c           # GP0-to-GS translation
-│   ├── gpu_vram.c          # VRAM shadow & transfers
-│   ├── gpu_primitives.c    # Polygon/line/sprite rendering
-│   ├── gpu_texture.c       # Texture handling
-│   ├── gpu_commands.c      # GP0/GP1 command parsing
-│   ├── gpu_dma.c           # GPU DMA transfers
-│   ├── gte.c               # GTE (Coprocessor 2) emulation
+│   ├── gpu_core.c          # GS environment setup, FRAME/DISPLAY registers
+│   ├── gpu_gif.c           # GIF buffer management, DMA to GS
+│   ├── gpu_vram.c          # VRAM upload/transfer, shadow VRAM
+│   ├── gpu_primitives.c    # GP0 primitive → GS translation, lazy state
+│   ├── gpu_texture.c       # Direct-map texture cache, HW CLUT, dirty tracking
+│   ├── gpu_commands.c      # GP0/GP1 command processing, VRAM transfers
+│   ├── gpu_dma.c           # GPU DMA controller, linked-list traversal
+│   ├── gte.c               # GTE (COP2) + VU0 macro mode for 22 commands
 │   ├── cdrom.c             # CD-ROM controller
 │   ├── scheduler.c         # Event-driven scheduler
+│   ├── timers.c            # PSX hardware timers
+│   ├── spu.c               # SPU with batch ADSR
+│   ├── sio.c               # Serial I/O
+│   ├── dma.c               # DMA controller
 │   ├── iso_image.c         # CUE/BIN image reader
 │   ├── iso_fs.c            # ISO 9660 filesystem
 │   ├── joystick.c          # Controller input
+│   ├── profiler.c          # Subsystem wall-clock profiler
+│   ├── config.c            # INI configuration parser
+│   ├── tlb_handler.c       # TLB handler (experimental)
 │   └── loader.c            # BIOS & PS-EXE loader
 ├── tests/                  # Hardware accuracy tests (ps1-tests)
 ├── isos/                   # Disc images (not included)

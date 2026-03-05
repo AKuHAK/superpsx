@@ -5,7 +5,7 @@
 | # | Optimización | Estado | Detalles |
 |---|---|---|---|
 | 1 | Register Pinning | ✅ 10 GPR + 4 infra | v0,v1,a0-a2→T3-T7 · s0,s1→S6,S7 · gp→FP · sp→S4 · ra→S5. Infra: S0=cpu, S1=RAM, S2=cycles, S3=mask |
-| 2 | Dynamic Slots (T0/T1/T2) | ✅ 3 slots | Frecuencia-based `dyn_assign_slots()`. Partial dirty tracking: `emit_cpu_field_to_psx_reg`/`emit_materialize_psx_imm`/`flush_dirty_consts` deferred; `emit_store_psx_reg`/`emit_sync_reg` write-through (required for game correctness) |
+| 2 | Dynamic Slots (T0/T1/T2) | ✅ 3 slots | Frecuencia-based `dyn_assign_slots()`. **Write-through only** — every store also writes `cpu.regs[]`. Partial dirty tracking was reverted (commit 7447029) because deferred flushes caused Crash Bandicoot to read stale `cpu.regs[]` values through some code paths |
 | 3 | Constant Propagation | ✅ | `vregs[32]` con `dirty_const_mask`, lazy materialization |
 | 4 | Dead Code Elimination | ✅ | Backward liveness en `block_scan()`, ventana 64 insn (`dce_dead_mask`) |
 | 5 | Direct Block Linking | ✅ | J-based DBL con back-patching + SMC check (page_gen + hash) |
@@ -24,9 +24,6 @@
 | 18 | Mem Slow-Path Trampoline | ✅ | `code_buffer[128]`: partial cycle accounting (`partial_block_cycles`) |
 | 19 | BIOS HLE Native Injection | ✅ | A0/B0/C0 hooks compiled inline en bloques |
 | 20 | Branch/Load Delay Slots | ✅ | `in_delay_slot` tracking + `pending_load_reg/apply_now` |
-| 21 | SMRV (Speculative Memory Region Validation) | ✅ | `smrv_known_ram` bitmask. Skip SRL+BNE range check para bases conocidas-RAM. Propagación en ADDIU/ORI/ADDI/ADDU/OR |
-| 22 | DBL para Branches Condicionales | ✅ | Tanto taken como not-taken usan `emit_direct_link()` + back-patching. Solo JR/JALR usan hash dispatch |
-| 23 | Branch Folding (const-prop) | ✅ | BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ/BLTZAL/BGEZAL. `is_vreg_const()` → branch_type=1 (unconditional), elimina path muerto |
 
 ---
 
@@ -46,20 +43,17 @@ Overhead real: ~590 SWs/frame (~0.2% del tiempo de frame). No justifica el esfue
 
 ---
 
-### 2. ~~SMRV~~ → Implementado (commit 0aa22e8)
-**Estado:** ✅ Completado. Movido a tabla de completados (#21).
-
----
-
-### 3. Branch Epilogue Delay-Slot Packing
-**Impacto:** Bajo (1 insn/epilogue) · **Esfuerzo:** 1 hora · **Riesgo:** Bajo  
+### 2. SMRV (Speculative Memory Region Validation)
+**Impacto:** Alto (5-8%) · **Esfuerzo:** 2-4 horas · **Riesgo:** Medio  
 **Estado actual:** ❌ No empezado
 
-`emit_branch_epilogue()` tiene ~10 insns con 2 NOPs en delay slots (BGTZ + J abort). El SW de PC podría ir en el delay slot del BGTZ (ejecutado en ambos paths). Ahorra 1 insn/epilogue. Impacto marginal dado que super-blocks ya eliminan la mayoría de epilogues.
+El hot path de LW/SW emite ~8 instrucciones: `AND S3` → `SRL+SLTIU` range check → branch → `ADDU+LW`. Con predicción de que el base register apunta a RAM (>95% de accesos), se emite un fast path optimista sin range check.
+
+**Alternativa simple:** Inline cache per-site. Cold path backpatchea el branch para fast path directo la próxima vez.
 
 ---
 
-### 4. FlushCache Batching
+### 3. FlushCache Batching
 **Impacto:** Bajo-Medio (1-3%) · **Esfuerzo:** 30 min · **Riesgo:** Bajo  
 **Estado actual:** ❌ No empezado
 
@@ -67,7 +61,7 @@ Overhead real: ~590 SWs/frame (~0.2% del tiempo de frame). No justifica el esfue
 
 ---
 
-### 5. LQ/SQ Bulk Flush/Reload (PS2-específico)
+### 4. LQ/SQ Bulk Flush/Reload (PS2-específico)
 **Impacto:** Medio (3-5%) · **Esfuerzo:** 1 día · **Riesgo:** Bajo  
 **Estado actual:** ❌ No empezado
 
@@ -77,7 +71,7 @@ EE tiene LQ/SQ (128-bit load/store). `emit_flush_pinned` pasaría de 10 SW a 3-4
 
 ---
 
-### 6. Dynamic Register Allocation (full)
+### 5. Dynamic Register Allocation (full)
 **Impacto:** Crítico (15-25%) · **Esfuerzo:** 2-4 semanas · **Riesgo:** Alto  
 **Estado actual:** 🔄 Parcial (3 dynamic slots T0/T1/T2)
 
@@ -104,8 +98,8 @@ Full regalloc al estilo pcsx_rearmed: `regmap[HOST_REGS]` per-instruction con di
 ## Prioridad recomendada
 
 ```
-1. FlushCache batching          (30 min — cambio trivial)
-2. Branch epilogue delay-slot   (1h — 1 insn/epilogue)
+1. SMRV / inline cache          (2-4h — alto impacto, reduce hot path LW/SW)
+2. FlushCache batching          (30 min — cambio trivial)
 3. LQ/SQ bulk flush/reload      (1 día — medio impacto)
 4. Dynamic regalloc full        (2-4 semanas — máximo impacto)
 ```
@@ -116,17 +110,36 @@ Full regalloc al estilo pcsx_rearmed: `regmap[HOST_REGS]` per-instruction con di
 
 ---
 
-## Profile: Crash Bandicoot → Start Screen (53 reports, ~53s)
+## Profile: Crash Bandicoot (post texture cache overhaul)
 
-| Fase | Frames | Speed | Bottleneck principal | JIT% | GPU TexCache% |
-|---|---|---|---|---|---|
-| BIOS Boot | 0-240 | 45% | JIT (75-98%) | 95% | — |
-| Game Init | 240-480 | 87% | JIT (93%) | 93% | — |
-| Logo/Menú | 600-960 | **100%** | Balanced | 60% | <1% |
-| Level Loading | 960-1080 | 38% | JIT (96%) | 96% | — |
-| Cutscene/Menú | 1080-1440 | **100%** | Balanced | 58% | 2% |
-| Gameplay temprano | 1680-2400 | 72% | JIT+GPU | 70% | 2% |
-| **3D Gameplay** | **2640-3180** | **34-37%** | **JIT 50% + GPU TexCache 28-35%** | 50% | **28-35%** |
+Measured after direct-map texture cache + CLUT round-robin (commit 3fcf97b).
 
-**Hotspot #1 siempre:** `PC=80034504` (kernel idle/scheduler) con 8-23M cycles.  
-**JIT compilation:** <0.1% en steady-state (solo notable en report #1 con 4.2%).
+| Categoría | % del frame | Notas |
+|---|---|---|
+| JIT Execution | 75.1% | Principal bottleneck — incluye todo el R3000A emulado |
+| GPU TexCache | 6.1% avg, 17-25% picos | Decode PSMT8/4 + CLUT upload. Picos en escenas con muchas texturas |
+| GPU Primitives | 5.4% | Traducción GP0 → GS |
+| GPU GIF Flush | 4.2% | DMA batch al GS |
+| SPU | ~2% | Batch ADSR optimizado |
+| Otros | ~7% | Scheduler, SIO, CDROM, etc. |
+
+**Velocidad general:** 55.3% (30.1ms/frame vs 16.6ms target @ 60fps).
+
+### Fases de ejecución (detalle)
+
+| Fase | Speed | Bottleneck | JIT% | GPU TexCache% |
+|---|---|---|---|---|
+| BIOS Boot | 45% | JIT (75-98%) | 95% | — |
+| Game Init | 87% | JIT (93%) | 93% | — |
+| Logo/Menú | **100%** | Balanced | 60% | <1% |
+| Level Loading | 38% | JIT (96%) | 96% | — |
+| **3D Gameplay** | **34-55%** | **JIT + GPU TexCache** | 50-75% | **6-25%** |
+
+**Hotspot #1:** `PC=80034504` (kernel idle/scheduler) con 8-23M cycles.
+**JIT compilation:** <0.1% en steady-state.
+
+### Comparación antes/después del texture cache overhaul
+
+El cambio de LRU hash-based a direct-map eliminó búsqueda lineal y redujo el overhead
+promedio de TexCache. Los picos siguen altos porque CLUT decode + CSM1 shuffle son
+operaciones inherentemente costosas (256 entries × byte shuffle + GS upload).

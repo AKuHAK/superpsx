@@ -9,24 +9,18 @@
 
 /* PSX register → native pinned register (0 = not pinned)
  *
- * Layout (Phase 1):
+ * Layout:
  *   Motor JIT (global):          S0=cpu, S1=ram, S2=cycles, S3=mask
- *   Callee-saved (survive C):    S4=$sp, S5=$ra, S6=$s0, S7=$s1, FP=$gp
- *   Caller-saved (flush in tramp): T3=$v0, T4=$v1, T5=$a0, T6=$a1, T7=$a2
+ *   Pinned (callee-saved, 4):    S4=$sp, S5=$ra, S6=$gp, S7=$fp
+ *   Dynamic slots (8):           T0-T7 (frequency-based per-block, write-through)
  *   Scratch cache (JIT engine):  T8, T9  (+ AT helper)
- *   Dynamic slots (Phase 2):     T0, T1, T2
  *   C-reserved (no pins):        A0-A3, V0-V1
+ *   Free:                        FP ($s8)
  */
 const int psx_pinned_reg[32] = {
-    [2]  = REG_T3,  /* PSX $v0 → native $t3 (caller-saved) */
-    [3]  = REG_T4,  /* PSX $v1 → native $t4 (caller-saved) */
-    [4]  = REG_T5,  /* PSX $a0 → native $t5 (caller-saved) */
-    [5]  = REG_T6,  /* PSX $a1 → native $t6 (caller-saved) */
-    [6]  = REG_T7,  /* PSX $a2 → native $t7 (caller-saved) */
-    [16] = REG_S6,  /* PSX $s0 → native $s6 (callee-saved) */
-    [17] = REG_S7,  /* PSX $s1 → native $s7 (callee-saved) */
-    [28] = REG_FP,  /* PSX $gp → native $fp (callee-saved) */
+    [28] = REG_S6,  /* PSX $gp → native $s6 (callee-saved) */
     [29] = REG_S4,  /* PSX $sp → native $s4 (callee-saved) */
+    [30] = REG_S7,  /* PSX $fp → native $s7 (callee-saved) */
     [31] = REG_S5,  /* PSX $ra → native $s5 (callee-saved) */
 };
 
@@ -53,28 +47,29 @@ void reg_cache_invalidate(void)
 }
 
 /* ================================================================
- *  Dynamic Register Slots — Write-Through T0/T1/T2
+ *  Dynamic Register Slots — Write-Through T0-T7
  *
  *  Each slot maps a frequently-used non-pinned PSX GPR to one of
- *  T0/T1/T2 for the duration of a compiled block.  The write-through
+ *  T0-T7 for the duration of a compiled block.  The write-through
  *  protocol ensures cpu.regs[] is always consistent: every store to
  *  a slot register also emits SW to memory.  This eliminates the need
  *  for writeback at block exits/abort trampolines.
  *
  *  Slots are suspended (disabled) during memory operations and C calls
- *  that commandeer T0/T1/T2 for their own purposes.  After suspension,
+ *  that commandeer T0-T7 for their own purposes.  After suspension,
  *  a reload restores the slot registers from the always-current memory.
  * ================================================================ */
-static const int dyn_slot_ee[DYN_SLOT_COUNT] = { REG_T0, REG_T1, REG_T2 };
-int dyn_slot_psx[DYN_SLOT_COUNT] = { -1, -1, -1 };
+static const int dyn_slot_ee[DYN_SLOT_COUNT] = {
+    REG_T0, REG_T1, REG_T2, REG_T3, REG_T4, REG_T5, REG_T6, REG_T7
+};
+int dyn_slot_psx[DYN_SLOT_COUNT];
 int dyn_slots_active = 0;
 
 /* Find the slot index holding PSX reg r, or -1 */
 static inline int dyn_slot_find(int r)
 {
-    if (dyn_slot_psx[0] == r) return 0;
-    if (dyn_slot_psx[1] == r) return 1;
-    if (dyn_slot_psx[2] == r) return 2;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+        if (dyn_slot_psx[i] == r) return i;
     return -1;
 }
 
@@ -83,7 +78,8 @@ static inline int dyn_slot_find(int r)
  * the highest access count (minimum 2 accesses to justify a slot). */
 void dyn_assign_slots(BlockScanResult *scan)
 {
-    dyn_slot_psx[0] = dyn_slot_psx[1] = dyn_slot_psx[2] = -1;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+        dyn_slot_psx[i] = -1;
     dyn_slots_active = 0;
 
     int slot = 0;
@@ -118,7 +114,7 @@ void dyn_load_slots(void)
 }
 
 /* Emit LW instructions to reload dynamic slots from cpu.regs[].
- * Called after C calls and memory ops that clobber T0/T1/T2. */
+ * Called after full C calls that may modify cpu.regs[]. */
 void dyn_reload_slots(void)
 {
     if (!dyn_slots_active) return;
@@ -129,7 +125,8 @@ void dyn_reload_slots(void)
 
 void dyn_reset_slots(void)
 {
-    dyn_slot_psx[0] = dyn_slot_psx[1] = dyn_slot_psx[2] = -1;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++)
+        dyn_slot_psx[i] = -1;
     dyn_slots_active = 0;
 }
 
@@ -151,8 +148,8 @@ void emit_load_psx_reg(int hwreg, int r)
         {
             EMIT_SW(hwreg, CPU_REG(r), REG_S0);
             /* Also update dynamic slot EE register if r is cached in one.
-             * Without this, T0/T1/T2 desync from cpu.regs[] when a lazy
-             * const is materialized into a different register (e.g. T8). */
+             * Without this, dynamic slots (T0-T7) desync from cpu.regs[]
+             * when a lazy const is materialized into a different register. */
             if (dyn_slots_active) {
                 int si = dyn_slot_find(r);
                 if (si >= 0 && dyn_slot_ee[si] != hwreg)
@@ -358,17 +355,9 @@ void flush_dirty_consts(void)
  * This ensures cpu.regs[] is consistent for C code and exception handlers. */
 void emit_flush_pinned(void)
 {
-    /* Caller-saved pins (T3-T7) */
-    EMIT_SW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
-    EMIT_SW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
-    EMIT_SW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
-    EMIT_SW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
-    EMIT_SW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
-    /* Callee-saved pins (S4-S7, FP) */
-    EMIT_SW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
-    EMIT_SW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
-    EMIT_SW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
+    EMIT_SW(REG_S6, CPU_REG(28), REG_S0); /* PSX $gp */
     EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $fp */
     EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -376,17 +365,9 @@ void emit_flush_pinned(void)
  * C functions may have modified cpu.regs[] directly. */
 void emit_reload_pinned(void)
 {
-    /* Caller-saved pins (T3-T7) */
-    EMIT_LW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
-    EMIT_LW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
-    EMIT_LW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
-    EMIT_LW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
-    EMIT_LW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
-    /* Callee-saved pins (S4-S7, FP) */
-    EMIT_LW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
-    EMIT_LW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
-    EMIT_LW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
+    EMIT_LW(REG_S6, CPU_REG(28), REG_S0); /* PSX $gp */
     EMIT_LW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    EMIT_LW(REG_S7, CPU_REG(30), REG_S0); /* PSX $fp */
     EMIT_LW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -396,17 +377,9 @@ void emit_reload_pinned(void)
  * pinned_written_mask to skip flushing regs that were never written. */
 void emit_flush_pinned_selective(uint32_t mask)
 {
-    /* Caller-saved */
-    if (mask & (1u <<  2)) EMIT_SW(REG_T3, CPU_REG(2),  REG_S0); /* PSX $v0 */
-    if (mask & (1u <<  3)) EMIT_SW(REG_T4, CPU_REG(3),  REG_S0); /* PSX $v1 */
-    if (mask & (1u <<  4)) EMIT_SW(REG_T5, CPU_REG(4),  REG_S0); /* PSX $a0 */
-    if (mask & (1u <<  5)) EMIT_SW(REG_T6, CPU_REG(5),  REG_S0); /* PSX $a1 */
-    if (mask & (1u <<  6)) EMIT_SW(REG_T7, CPU_REG(6),  REG_S0); /* PSX $a2 */
-    /* Callee-saved */
-    if (mask & (1u << 16)) EMIT_SW(REG_S6, CPU_REG(16), REG_S0); /* PSX $s0 */
-    if (mask & (1u << 17)) EMIT_SW(REG_S7, CPU_REG(17), REG_S0); /* PSX $s1 */
-    if (mask & (1u << 28)) EMIT_SW(REG_FP, CPU_REG(28), REG_S0); /* PSX $gp */
+    if (mask & (1u << 28)) EMIT_SW(REG_S6, CPU_REG(28), REG_S0); /* PSX $gp */
     if (mask & (1u << 29)) EMIT_SW(REG_S4, CPU_REG(29), REG_S0); /* PSX $sp */
+    if (mask & (1u << 30)) EMIT_SW(REG_S7, CPU_REG(30), REG_S0); /* PSX $fp */
     if (mask & (1u << 31)) EMIT_SW(REG_S5, CPU_REG(31), REG_S0); /* PSX $ra */
 }
 
@@ -426,7 +399,7 @@ void emit_call_c(uint32_t func_addr)
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
     EMIT_NOP();
     /* C helpers via call_c may write cpu.regs[] — reload dynamic slots
-     * from cpu.regs[] to pick up any changes (T0/T1/T2 are clobbered). */
+     * from cpu.regs[] to pick up any changes (T0-T7 are clobbered). */
     dyn_reload_slots();
     reg_cache_invalidate();
     /* SMRV: C helper may change any cpu.regs[], invalidate all
@@ -439,13 +412,13 @@ void emit_call_c_lite(uint32_t func_addr)
     /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
     /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
-     * Only flushes/reloads caller-saved pinned regs (T3-T7 = 5 regs), skipping
-     * callee-saved pins (S4/S5/S6/S7/FP) which C ABI preserves. */
+     * Saves/restores ALL 8 dynamic slot regs (T0-T7) to stack.
+     * Callee-saved pins (S4/S5/S6/S7) preserved by C ABI. */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T8, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
     EMIT_NOP();
-    /* T0/T1/T2 preserved by lite trampoline save/restore */
+    /* T0-T7 (dynamic slots) preserved by lite trampoline save/restore */
     reg_cache_invalidate();
 }
 

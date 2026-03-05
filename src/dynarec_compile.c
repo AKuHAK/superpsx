@@ -909,7 +909,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                     emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* BNE at, zero, @taken */
                     EMIT_NOP();
 
-                    /* Slots intact (AT used for condition, not T0/T1/T2) */
+                    /* Slots intact (AT used for condition, not T0-T7) */
 
                     /* Fall-through: continue compiling next sub-block.
                      * vregs carry over — const propagation across fall-through. */

@@ -222,16 +222,10 @@ void Init_Dynarec(void)
     {
         uint32_t *p = &code_buffer[2];
         *p++ = MK_R(0, REG_S2, 0, REG_V0, 0, 0x25); /* or v0, s2, zero */
-        /* Flush 10 pinned PSX regs to cpu struct */
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+        /* Flush 4 pinned PSX regs to cpu struct */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
         *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
         *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
         /* Restore EE callee-saved registers */
         *p++ = MK_I(0x23, REG_SP, REG_FP, 68);
@@ -253,20 +247,14 @@ void Init_Dynarec(void)
     call_c_trampoline_addr = &code_buffer[32];
     {
         uint32_t *p = call_c_trampoline_addr;
-        /* NOTE: T0/T1/T2 (dynamic slots) are NOT saved here because
+        /* NOTE: T0-T7 (dynamic slots) are NOT saved here because
          * C helpers called via this trampoline may write to cpu.regs[],
          * and the inline dyn_reload_slots() must pick up those changes.
-         * Only the lite trampoline saves/restores T0/T1/T2. */
-        /* Flush ALL 10 pinned regs to cpu struct (exception safety) */
-        *p++ = MK_I(0x2B, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
-        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
-        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
-        *p++ = MK_I(0x2B, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+         * Only the lite trampoline saves/restores T0-T7. */
+        /* Flush 4 pinned regs to cpu struct (exception safety) */
+        *p++ = MK_I(0x2B, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
         *p++ = MK_I(0x2B, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x2B, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
         *p++ = MK_I(0x2B, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
         /* Call target function (T8 = func_addr) */
         *p++ = MK_I(0x09, REG_SP, REG_SP, (uint32_t)(int32_t)-32);
@@ -275,17 +263,12 @@ void Init_Dynarec(void)
         *p++ = 0;
         *p++ = MK_I(0x23, REG_SP, REG_RA, 28);
         *p++ = MK_I(0x09, REG_SP, REG_SP, 32);
-        /* Reload ALL 10 pinned regs: C helpers may write to cpu.regs[]
-         * for any register (e.g., Helper_ADD writes to cpu.regs[rd]). */
-        *p++ = MK_I(0x23, REG_S0, REG_T3, CPU_REG(2));   /* PSX $v0 */
-        *p++ = MK_I(0x23, REG_S0, REG_T4, CPU_REG(3));   /* PSX $v1 */
-        *p++ = MK_I(0x23, REG_S0, REG_T5, CPU_REG(4));   /* PSX $a0 */
-        *p++ = MK_I(0x23, REG_S0, REG_T6, CPU_REG(5));   /* PSX $a1 */
-        *p++ = MK_I(0x23, REG_S0, REG_T7, CPU_REG(6));   /* PSX $a2 */
-        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(16));  /* PSX $s0 */
-        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(17));  /* PSX $s1 */
-        *p++ = MK_I(0x23, REG_S0, REG_FP, CPU_REG(28));  /* PSX $gp */
+        /* Reload 4 pinned regs: C helpers may write to cpu.regs[]
+         * for any register (e.g., Helper_ADD writes to cpu.regs[rd]).
+         * Dynamic slots are reloaded inline by dyn_reload_slots(). */
+        *p++ = MK_I(0x23, REG_S0, REG_S6, CPU_REG(28));  /* PSX $gp */
         *p++ = MK_I(0x23, REG_S0, REG_S4, CPU_REG(29));  /* PSX $sp */
+        *p++ = MK_I(0x23, REG_S0, REG_S7, CPU_REG(30));  /* PSX $fp */
         *p++ = MK_I(0x23, REG_S0, REG_S5, CPU_REG(31));  /* PSX $ra */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
@@ -295,9 +278,8 @@ void Init_Dynarec(void)
      * For C helpers that do NOT read/write cpu.regs[] (memory R/W,
      * LWL/LWR, SWL/SWR).  Saves ALL caller-saved registers directly
      * to the block stack frame — never touches cpu.regs[].
-     * T0/T1/T2 (dynamic slots) at offsets 0,4,8.
-     * T3-T7 (caller-saved pinned) at offsets 12,16,20,24,76.
-     * Callee-saved S-regs (S4,S5,S6,S7,FP) preserved by C ABI. */
+     * T0-T7 (8 dynamic slots) at offsets 0,4,8,12,16,20,24,76.
+     * Callee-saved S-regs (S4,S5,S6,S7) preserved by C ABI. */
     call_c_trampoline_lite_addr = &code_buffer[68];
     {
         uint32_t *p = call_c_trampoline_lite_addr;

@@ -29,7 +29,7 @@
 #define PATCH_SITE_MAX 8192
 
 #define SCAN_MAX_INSNS 64 /* Max instructions analyzed per block scan */
-#define DYN_SLOT_COUNT 3   /* Dynamic register slots: T0, T1, T2 (exclusive — not used as scratch) */
+#define DYN_SLOT_COUNT 8   /* Dynamic register slots: T0-T7 (write-through to cpu.regs[]) */
 
 /* ================================================================
  *  Shared types
@@ -98,8 +98,8 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_S3 19 /* Pinned: physical address mask 0x1FFFFFFF */
 #define REG_S4 20 /* Pinned: PSX $sp (29) */
 #define REG_S5 21 /* Pinned: PSX $ra (31) */
-#define REG_S6 22 /* Pinned: PSX $s0 (16) */
-#define REG_S7 23 /* Pinned: PSX $s1 (17) */
+#define REG_S6 22 /* Pinned: PSX $gp (28) */
+#define REG_S7 23 /* Pinned: PSX $fp (30) */
 #define REG_T0 8
 #define REG_T1 9
 #define REG_T2 10
@@ -116,12 +116,12 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_A3 7
 #define REG_V0 2
 #define REG_V1 3
-#define REG_FP 30 /* Pinned: PSX $gp (28) */
+#define REG_FP 30 /* $s8/$fp — free (not pinned, reserved for future use) */
 #define REG_RA 31
 #define REG_SP 29
 #define REG_ZERO 0
 
-#define DYNAREC_PROLOGUE_WORDS 26
+#define DYNAREC_PROLOGUE_WORDS 20
 
 /* ================================================================
  *  MIPS instruction builders
@@ -379,11 +379,11 @@ extern int t8_cached_psx_reg;
 extern int t9_cached_psx_reg;
 void reg_cache_invalidate(void);
 
-/* Dynamic register slots — write-through T0/T1/T2.
- * Per-block allocation: top-N non-pinned regs mapped to T0/T1/T2.
+/* Dynamic register slots — write-through T0-T7.
+ * Per-block allocation: top-N non-pinned regs mapped to T0-T7 (8 slots).
  * Write-through: every store updates both slot reg AND cpu.regs[],
  * so memory is always consistent — no writeback needed on exits.
- * T0/T1/T2 are EXCLUSIVE slots — never used as inline scratch.
+ * T0-T7 are EXCLUSIVE slots — never used as inline scratch.
  * Scratch registers: T8, T9, AT. */
 extern int dyn_slot_psx[DYN_SLOT_COUNT];
 extern int dyn_slots_active;

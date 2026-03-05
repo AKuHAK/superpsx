@@ -26,7 +26,7 @@ extern uint64_t gpu_busy_until;
  * This allows timer reads/writes during C helper calls to see accurate
  * cycle counts instead of stale global_cycles.
  *
- * Uses REG_AT and REG_T9 as scratch (avoids clobbering dynamic slot regs T0/T1/T2).
+ * Uses REG_AT and REG_T9 as scratch (avoids clobbering dynamic slot regs T0-T7).
  * Cost: 3 native instructions on the slow path.
  *
  * Note: LUI loads the upper half; SW/LW sign-extend the 16-bit offset.
@@ -223,7 +223,7 @@ void tlb_patch_emit_all(void)
         if (e->type == 0 && !e->load_defer)
             emit_store_psx_reg(e->rt_psx, REG_V0);
 
-        /* T0/T1/T2 preserved by lite trampoline save/restore */
+        /* T0-T7 preserved by lite trampoline save/restore */
 
         /* Branch back to return point */
         {
@@ -325,7 +325,7 @@ void cold_slow_emit_all(void)
         if ((e->type == 0 || e->type == 2) && !e->load_defer)
             emit_store_psx_reg(e->rt_psx, REG_V0);
 
-        /* T0/T1/T2 preserved by lite trampoline save/restore */
+        /* T0-T7 preserved by lite trampoline save/restore */
 
         /* Branch back to return point */
         {
@@ -380,7 +380,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         /* Aligned RAM access? */
         if ((phys < PSX_RAM_SIZE) && (phys % size == 0))
         {
-            /* Use T9 as scratch for large address (avoids clobbering dyn slots T0/T1/T2) */
+            /* Use T9 as scratch for large address (avoids clobbering dyn slots T0-T7) */
             emit_load_imm32(REG_T9, (uint32_t)psx_ram + phys);
             if (size == 4)
                 EMIT_LW(REG_V0, 0, REG_T9);
@@ -704,7 +704,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                 emit_load_imm32(REG_T8, (uint32_t)jit_smc_handler);
                 EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
                 EMIT_NOP();
-                /* T0/T1/T2 preserved by lite trampoline save/restore */
+                /* T0-T7 preserved by lite trampoline save/restore */
 
                 /* Fixup BEQ target to skip the handler call */
                 int32_t skip = (int32_t)(code_ptr - beq_ptr - 2);

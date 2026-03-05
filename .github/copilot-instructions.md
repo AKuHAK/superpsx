@@ -19,20 +19,20 @@ The emulator runs inside **PCSX2** for development/testing. The final target is 
 # Build (from workspace root)
 cmake --build build 2>&1 | tail -5
 
-# GTE test (expect: 1150 passed, 0 failed)
+# GTE test (expect: 1150 passed, 0 failed) — 20s is enough
 rm -f build/superpsx.ini && printf "gte_vu0 = 0\n" > build/superpsx.ini && \
-perl -e 'alarm 60; exec @ARGV' make -C build run \
+perl -e 'alarm 20; exec @ARGV' make -C build run \
   GAMEARGS=tests/gte/test-all/test-all.exe > /tmp/gte_out.txt 2>&1; \
 grep -E "Passed|Failed" /tmp/gte_out.txt | head -5; \
 rm -f build/superpsx.ini && ln -sf $(pwd)/superpsx.ini build/superpsx.ini
 
-# CPU test (expect: 0 errors)
-perl -e 'alarm 120; exec @ARGV' make -C build run \
+# CPU test (expect: 0 errors) — 20s is enough
+perl -e 'alarm 20; exec @ARGV' make -C build run \
   GAMEARGS=tests/psxtest_cpu/psxtest_cpu.exe > /tmp/cpu_out.txt 2>&1; \
 grep -c "error" /tmp/cpu_out.txt
 
-# Timer test
-perl -e 'alarm 60; exec @ARGV' make -C build run \
+# Timer test — 20s is enough
+perl -e 'alarm 20; exec @ARGV' make -C build run \
   GAMEARGS=tests/timers/timers.exe > /tmp/timer_out.txt 2>&1; \
 tail -5 /tmp/timer_out.txt
 
@@ -47,34 +47,38 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 37 micro-tests cover ALU, shifts, mul/div, comparisons, load/store, branches, and instruction interactions.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 48 micro-tests split across 4 category files.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 37/37 passed)
-perl -e 'alarm 60; exec @ARGV' make -C build run-playground \
+# Run playground (expect: 48/48 passed) — 15s is enough
+perl -e 'alarm 15; exec @ARGV' make -C build run-playground \
   > /tmp/playground_out.txt 2>&1; \
-grep -E "Results" /tmp/playground_out.txt
+grep -E "Results|FAIL" /tmp/playground_out.txt
 ```
 
 **Key files:**
 - `tests/jit/playground.h` — DSL header (opcode encoding macros, test framework macros)
 - `tests/jit/playground_main.c` — Entry point, stubs, `pg_run_jit()` dispatch loop
-- `tests/jit/playground_tests.c` — 37 test cases using the DSL
+- `tests/jit/playground_tests.c` — Thin runner calling the 4 category runners
+- `tests/jit/test_alu.c` — ALU, shifts, mul/div, comparisons, HI/LO (21 tests)
+- `tests/jit/test_memory.c` — Load/Store: LW/SW, LB/SB, LH/SH, LWL/LWR, SWL/SWR (6 tests)
+- `tests/jit/test_branch.c` — Branches: BEQ, BNE, BLTZ, BGEZ, BLEZ, BGTZ, delay slots (7 tests)
+- `tests/jit/test_block.c` — Interactions, cross-block, loops, nested JAL, all-32-regs (14 tests)
 - `docs/jit_playground.md` — Design document
 
-**Adding new tests:** Write a `static void test_xxx(void)` in `playground_tests.c` using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from `pg_run_all_tests()`.
+**Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, or `pg_run_block_tests`).
 
-**Before committing JIT changes:** run the playground (`37/37 passed`) in addition to the standard GTE/CPU/Timer tests.
+**Before committing JIT changes:** run the playground (`48/48 passed`) in addition to the standard GTE/CPU/Timer tests.
 
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 37/37 passed** (for dynarec changes)
+2. **JIT Playground: 48/48 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
 4. CPU: 0 errors (grep -c "error")
 5. Timer test: must complete without hangs

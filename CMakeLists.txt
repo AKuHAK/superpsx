@@ -212,6 +212,41 @@ list(APPEND PCSX2_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.elf")
 string(REPLACE ";" "\\;" PCSX2_CMD_ESC "${PCSX2_CMD}")
 
 # ============================================================================
+# JIT Playground — separate ELF for testing the dynarec in isolation
+# ============================================================================
+set(PLAYGROUND_SOURCES
+    tests/jit/playground_main.c
+    tests/jit/playground_tests.c
+    src/cpu.c
+    src/memory.c
+    src/scheduler.c
+    src/dynarec_emit.c
+    src/dynarec_cache.c
+    src/dynarec_memory.c
+    src/dynarec_compile.c
+    src/dynarec_insn.c
+    src/dynarec_run.c
+    src/tlb_handler.c
+)
+
+add_executable(jit_playground.elf EXCLUDE_FROM_ALL ${PLAYGROUND_SOURCES})
+
+target_include_directories(jit_playground.elf PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests/jit
+)
+
+target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall)
+target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND)
+
+target_link_libraries(jit_playground.elf PRIVATE
+    -lpatches
+    -lps2_drivers
+    -ldebug
+)
+
+# ============================================================================
 # Generic "run" target — pass GAMEARGS at make-time:
 #   make run GAMEARGS=tests/gpu/triangle/triangle.exe
 # ============================================================================
@@ -221,6 +256,23 @@ add_custom_target(run
         -P "${CMAKE_SOURCE_DIR}/cmake/run_pcsx2.cmake"
     DEPENDS ${PROJECT_NAME}.elf
     COMMENT "Running ${PROJECT_NAME}.elf in PCSX2"
+    VERBATIM
+)
+
+# Build PCSX2 command for running the playground ELF
+set(PCSX2_PG_CMD "${PCSX2_PATH}")
+foreach(_f ${PCSX2_RUN_FLAGS})
+    list(APPEND PCSX2_PG_CMD "${_f}")
+endforeach()
+list(APPEND PCSX2_PG_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/jit_playground.elf")
+string(REPLACE ";" "\\;" PCSX2_PG_CMD_ESC "${PCSX2_PG_CMD}")
+
+add_custom_target(run-playground
+    COMMAND ${CMAKE_COMMAND}
+        "-DPCSX2_CMD=${PCSX2_PG_CMD_ESC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/run_pcsx2.cmake"
+    DEPENDS jit_playground.elf
+    COMMENT "Running JIT Playground in PCSX2"
     VERBATIM
 )
 

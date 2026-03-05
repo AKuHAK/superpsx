@@ -45,15 +45,40 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 - **Always redirect to file** (`> /tmp/out.txt 2>&1`), NEVER pipe (`|`). Pipes cause SIGPIPE to kill the emulator prematurely.
 - For GPU/rendering changes, do NOT run automated tests — ask the user to launch Crash Bandicoot and MK2 manually and report results.
 
+## JIT Playground
+
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 37 micro-tests cover ALU, shifts, mul/div, comparisons, load/store, branches, and instruction interactions.
+
+```bash
+# Build playground (EXCLUDE_FROM_ALL — not built by default)
+cmake --build build --target jit_playground.elf 2>&1 | tail -5
+
+# Run playground (expect: 37/37 passed)
+perl -e 'alarm 60; exec @ARGV' make -C build run-playground \
+  > /tmp/playground_out.txt 2>&1; \
+grep -E "Results" /tmp/playground_out.txt
+```
+
+**Key files:**
+- `tests/jit/playground.h` — DSL header (opcode encoding macros, test framework macros)
+- `tests/jit/playground_main.c` — Entry point, stubs, `pg_run_jit()` dispatch loop
+- `tests/jit/playground_tests.c` — 37 test cases using the DSL
+- `docs/jit_playground.md` — Design document
+
+**Adding new tests:** Write a `static void test_xxx(void)` in `playground_tests.c` using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from `pg_run_all_tests()`.
+
+**Before committing JIT changes:** run the playground (`37/37 passed`) in addition to the standard GTE/CPU/Timer tests.
+
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. GTE: 1150 passed, 0 failed
-3. CPU: 0 errors (grep -c "error")
-4. Timer test: must complete without hangs
-5. **For GPU/rendering changes:** ask the user to test Crash Bandicoot and MK2 manually
+2. **JIT Playground: 37/37 passed** (for dynarec changes)
+3. GTE: 1150 passed, 0 failed
+4. CPU: 0 errors (grep -c "error")
+5. Timer test: must complete without hangs
+6. **For GPU/rendering changes:** ask the user to test Crash Bandicoot and MK2 manually
 
 ## Code Conventions
 

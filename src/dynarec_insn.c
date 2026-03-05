@@ -347,11 +347,13 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
 
-            /* Flush current rd pinned value to cpu.regs[] so the cold path
-             * (overflow) can restore it.  Pinned regs may be stale in memory
-             * if a prior instruction wrote only to the EE register. */
+            /* Flush current rd value to cpu.regs[] so the cold path
+             * (overflow) can restore it.  Covers both pinned regs and
+             * dirty dynamic slots that haven't been written back yet. */
             if (rd != 0 && psx_pinned_reg[rd])
                 EMIT_SW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+            else
+                dyn_flush_one_slot(rd);
 
             /* Pre-compute rs^rt; save rs via stack to avoid scratch conflict
              * when rd=0 (emit_dst_reg returns REG_T8 as junk dest). */
@@ -380,9 +382,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 /* Restore rd from cpu.regs[] (flushed above before ADDU). */
                 if (rd != 0 && psx_pinned_reg[rd])
                     EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+                else
+                    dyn_reload_one_slot(rd);
 
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
+                uint8_t saved_dyn_dirty = dyn_dirty_mask;
                 int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -392,6 +397,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
+                dyn_dirty_mask = saved_dyn_dirty;
                 t8_cached_psx_reg = saved_t8;
                 t9_cached_psx_reg = saved_t9;
             }
@@ -444,9 +450,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
 
-            /* Flush pinned rd so cold path can restore from cpu.regs[] */
+            /* Flush pinned/dynamic rd so cold path can restore from cpu.regs[] */
             if (rd != 0 && psx_pinned_reg[rd])
                 EMIT_SW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+            else
+                dyn_flush_one_slot(rd);
 
             /* Pre-compute rs^rt; save rs via stack */
             emit(MK_R(0, s1, s2, REG_AT, 0, 0x26)); /* XOR  AT, s1, s2 */
@@ -469,9 +477,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             {
                 if (rd != 0 && psx_pinned_reg[rd])
                     EMIT_LW(psx_pinned_reg[rd], CPU_REG(rd), REG_S0);
+                else
+                    dyn_reload_one_slot(rd);
 
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
+                uint8_t saved_dyn_dirty = dyn_dirty_mask;
                 int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -481,6 +492,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
+                dyn_dirty_mask = saved_dyn_dirty;
                 t8_cached_psx_reg = saved_t8;
                 t9_cached_psx_reg = saved_t9;
             }
@@ -630,9 +642,11 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         mark_vreg_var(rt);
         int s1 = emit_use_reg(rs, REG_T8);
 
-        /* Flush pinned rt so cold path can restore from cpu.regs[] */
+        /* Flush pinned/dynamic rt so cold path can restore from cpu.regs[] */
         if (rt != 0 && psx_pinned_reg[rt])
             EMIT_SW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
+        else
+            dyn_flush_one_slot(rt);
 
         /* Load sign-extended immediate into T1 for overflow check */
         emit_load_imm32(REG_T9, (uint32_t)imm);
@@ -658,9 +672,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         {
             if (rt != 0 && psx_pinned_reg[rt])
                 EMIT_LW(psx_pinned_reg[rt], CPU_REG(rt), REG_S0);
+            else
+                dyn_reload_one_slot(rt);
 
             RegStatus saved_vregs[32];
             uint32_t saved_dirty = dirty_const_mask;
+            uint8_t saved_dyn_dirty = dyn_dirty_mask;
             int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
             memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -670,6 +687,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
             memcpy(vregs, saved_vregs, sizeof(vregs));
             dirty_const_mask = saved_dirty;
+            dyn_dirty_mask = saved_dyn_dirty;
             t8_cached_psx_reg = saved_t8;
             t9_cached_psx_reg = saved_t9;
         }

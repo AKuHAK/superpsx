@@ -36,6 +36,7 @@ typedef struct {
     uint32_t cycle_count;        /* Accumulated cycles at this branch point */
     RegStatus saved_vregs[32];   /* vreg state at branch point */
     uint32_t saved_dirty_mask;   /* dirty_const_mask at branch point */
+    uint8_t  saved_dyn_dirty;    /* dyn_dirty_mask at branch point */
 } DeferredTakenEntry;
 
 static DeferredTakenEntry deferred_taken[MAX_CONTINUATIONS];
@@ -57,9 +58,11 @@ static void emit_deferred_taken_all(void)
         /* Restore vreg state for this branch point */
         memcpy(vregs, e->saved_vregs, sizeof(vregs));
         dirty_const_mask = e->saved_dirty_mask;
+        dyn_dirty_mask = e->saved_dyn_dirty;
 
         /* Emit standard branch epilogue inline */
         flush_dirty_consts();
+        dyn_flush_all_slots(); /* D: block exit — full flush for correctness */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
@@ -605,11 +608,12 @@ void emit_block_prologue(void)
     emit_reload_pinned();
 }
 
-/* ---- Block epilogue: flush pinned, restore and return ---- */
+/* ---- Block epilogue: flush dirty slots + pinned, restore and return ---- */
 void emit_block_epilogue(void)
 {
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
     EMIT_MOVE(REG_V0, REG_S2);
+    dyn_flush_all_slots(); /* E: emit_block_epilogue — block exit */
     emit_flush_pinned();
     EMIT_LW(REG_FP, 68, REG_SP);
     EMIT_LW(REG_S7, 60, REG_SP);
@@ -630,6 +634,8 @@ void emit_branch_epilogue(uint32_t target_pc)
 {
     /* Materialize any lazy constants before leaving the block */
     flush_dirty_consts();
+    /* Flush dirty dynamic slots so cpu.regs[] is consistent */
+    dyn_flush_all_slots(); /* F: emit_branch_epilogue — block exit */
 
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
@@ -905,6 +911,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                     dt->cycle_count = block_cycle_count;
                     memcpy(dt->saved_vregs, vregs, sizeof(vregs));
                     dt->saved_dirty_mask = dirty_const_mask;
+                    dt->saved_dyn_dirty = dyn_dirty_mask;
                     dt->branch_insn = code_ptr;
                     emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* BNE at, zero, @taken */
                     EMIT_NOP();
@@ -937,6 +944,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                     RegStatus saved_vregs[32];
                     uint32_t saved_dirty_mask = dirty_const_mask;
+                    uint8_t saved_dyn_dirty = dyn_dirty_mask;
                     memcpy(saved_vregs, vregs, sizeof(vregs));
 
                     /* Not taken: fall through PC */
@@ -949,6 +957,7 @@ uint32_t *compile_block(uint32_t psx_pc)
 
                     memcpy(vregs, saved_vregs, sizeof(vregs));
                     dirty_const_mask = saved_dirty_mask;
+                    dyn_dirty_mask = saved_dyn_dirty;
                     emit_branch_epilogue(branch_target);
                 }
             }
@@ -957,6 +966,7 @@ uint32_t *compile_block(uint32_t psx_pc)
                 /* Register jump (JR/JALR): Inline hash dispatch.
                  * T8 is required by jump_dispatch_trampoline (hash computation). */
                 flush_dirty_consts();
+                dyn_flush_all_slots(); /* G: JR/JALR dispatch — block exit */
                 EMIT_LW(REG_T8, CPU_PC, REG_S0);
                 EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
                 EMIT_J_ABS((uint32_t)jump_dispatch_trampoline_addr);
@@ -1323,20 +1333,6 @@ uint32_t *compile_block(uint32_t psx_pc)
     /* Emit TLB backpatch stubs (range-checked cold paths for TLB misses) */
     if (psx_tlb_base)
         tlb_patch_emit_all();
-
-    if (blocks_compiled < 5)
-    {
-        int num_words = (int)(code_ptr - block_start);
-        DLOG("Block %u at %p, %d words:\n",
-             (unsigned)blocks_compiled, block_start, num_words);
-        int j;
-        for (j = 0; j < num_words && j < 32; j++)
-        {
-            DLOG_RAW("  [%02d] %p: 0x%08X\n", j, &block_start[j], (unsigned)block_start[j]);
-        }
-        if (num_words > 32)
-            DLOG_RAW("  ... (%d more)\n", num_words - 32);
-    }
 
     /* Cache flush done in run_jit_chain after apply_pending_patches. */
 

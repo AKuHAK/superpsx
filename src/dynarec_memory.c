@@ -20,6 +20,7 @@
  * skip the expensive C call on the common "GPU idle" path. */
 extern uint64_t gpu_busy_until;
 
+
 /*
  * emit_flush_partial_cycles: Emit code to store the compile-time cycle
  * offset (emit_cycle_offset) into the partial_block_cycles global.
@@ -67,6 +68,7 @@ typedef struct {
     uint8_t   type;         /* 0=read, 1=write, 2=lwx, 3=swx */
     uint8_t   has_abort;    /* emit_abort_check after trampoline? */
     uint8_t   load_defer;   /* dynarec_load_defer at emission time */
+    uint8_t   saved_dirty_mask; /* dyn_dirty_mask at instruction point */
     int       rt_psx;       /* PSX register for store result */
 } ColdSlowEntry;
 
@@ -125,6 +127,7 @@ typedef struct {
     uint8_t   size;         /* 1/2/4 */
     uint8_t   is_signed;    /* Sign extension needed? */
     uint8_t   load_defer;   /* dynarec_load_defer at emit time */
+    uint8_t   saved_dirty_mask; /* dyn_dirty_mask at instruction point */
     int       rt_psx;       /* PSX register for read result store */
 } TLBBPEntry;
 static TLBBPEntry tlb_bp_queue[MAX_TLB_BP];
@@ -137,6 +140,10 @@ void tlb_patch_emit_all(void)
     {
         TLBBPEntry *e = &tlb_bp_queue[i];
         uint32_t *stub_start = code_ptr;
+
+        /* Restore dirty mask from the instruction point (same rationale
+         * as cold_slow_emit_all — abort_check needs the correct mask). */
+        dyn_dirty_mask = e->saved_dirty_mask;
 
         /* Register the stub address in the global map */
         if (tlb_bp_map_count < MAX_TLB_BP_MAP)
@@ -285,6 +292,14 @@ void cold_slow_emit_all(void)
     {
         ColdSlowEntry *e = &cold_queue[i];
         int j;
+
+        /* Restore the dirty mask from the instruction that created this entry,
+         * so that emit_abort_check flushes the correct set of dynamic slots.
+         * Without this, the mask reflects end-of-block state which may have
+         * already-cleared bits for slots that are still dirty at this point
+         * in the instruction stream.  See DeferredTakenEntry.saved_dyn_dirty
+         * for the same pattern on branch paths. */
+        dyn_dirty_mask = e->saved_dirty_mask;
 
         /* Patch all branches to point to this cold slow path entry */
         for (j = 0; j < e->num_branches; j++)
@@ -613,6 +628,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         p->size         = (uint8_t)size;
         p->is_signed    = (uint8_t)is_signed;
         p->load_defer   = (uint8_t)dynarec_load_defer;
+        p->saved_dirty_mask = dyn_dirty_mask;
         p->rt_psx       = rt_psx;
     }
 
@@ -636,6 +652,7 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
         e->type = 0; /* read */
         e->has_abort = (size >= 2) ? 1 : 0;
         e->load_defer = (uint8_t)dynarec_load_defer;
+        e->saved_dirty_mask = dyn_dirty_mask;
         e->rt_psx = rt_psx;
     }
     reg_cache_invalidate();
@@ -901,6 +918,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         p->size         = (uint8_t)size;
         p->is_signed    = 0;
         p->load_defer   = 0;
+        p->saved_dirty_mask = dyn_dirty_mask;
         p->rt_psx       = 0;
     }
 
@@ -924,6 +942,7 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
         e->type = 1; /* write */
         e->has_abort = (size >= 2) ? 1 : 0;
         e->load_defer = 0;
+        e->saved_dirty_mask = dyn_dirty_mask;
         e->rt_psx = 0;
     }
     reg_cache_invalidate();
@@ -993,6 +1012,7 @@ void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int us
         e->type = 2; /* lwx */
         e->has_abort = 0;
         e->load_defer = (uint8_t)dynarec_load_defer;
+        e->saved_dirty_mask = dyn_dirty_mask;
         e->rt_psx = rt_psx;
     }
     reg_cache_invalidate();
@@ -1067,6 +1087,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
         e->type = 3; /* swx */
         e->has_abort = 0;
         e->load_defer = 0;
+        e->saved_dirty_mask = dyn_dirty_mask;
         e->rt_psx = 0;
     }
     reg_cache_invalidate();

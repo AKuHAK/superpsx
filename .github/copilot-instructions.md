@@ -44,6 +44,8 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 ```
 
 **IMPORTANT:**
+
+- All tests run BIOS first, so if you broke jit maybe the Phase 1 (BIOS) test will fail instead of Phase 2 (CPU/GTE). Check the actual test output to confirm.
 - macOS has no `timeout`/`gtimeout`. Use `perl -e 'alarm N; exec @ARGV'` for timeouts.
 - **Always redirect to file** (`> /tmp/out.txt 2>&1`), NEVER pipe (`|`). Pipes cause SIGPIPE to kill the emulator prematurely.
 - **PCSX2 emulog.txt is CUMULATIVE** across runs. Always clear it before each test run: `cat /dev/null > ~/Library/Application\ Support/PCSX2/logs/emulog.txt`
@@ -64,6 +66,7 @@ grep -E "Results|FAIL" /tmp/playground_out.txt
 ```
 
 **Key files:**
+
 - `tests/jit/playground.h` — DSL header (opcode encoding macros, test framework macros)
 - `tests/jit/playground_main.c` — Entry point, stubs, `pg_run_jit()` dispatch loop
 - `tests/jit/playground_tests.c` — Thin runner calling the 4 category runners
@@ -116,7 +119,7 @@ Trampolines at fixed offsets in `code_buffer[]`:
 
 - [0]: slow-path, [2]: abort, [32]: full C-call, [68]: lite C-call, [96]: jump dispatch, [128]: mem slow-path
 - JIT blocks start at [144+]
-- `DYNAREC_PROLOGUE_WORDS = 26` (skip in direct block links)
+- `DYNAREC_PROLOGUE_WORDS` (skip in direct block links)
 
 ## Current Roadmap
 
@@ -146,3 +149,5 @@ When a JIT change causes a regression:
 3. **Analyze the actual instruction stream** — trace register usage, verify delay slots, check branch offsets.
 4. **Bisection + Code Analysis**: bisect to narrow down the failing code region, then dump the exact generated code to identify the root cause. Don't rely solely on test pass/fail — read the actual machine instructions.
 5. This is a CoT (Chain-of-Thought) approach: hypothesize → verify with data → refine → fix.
+
+THIS METHODOLOGY IS CRITICAL. Avoid guessing or making assumptions about what the JIT is doing — always verify with actual dumps of the generated code.

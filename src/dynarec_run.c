@@ -718,6 +718,41 @@ static void Sched_HBlank_Callback(void)
  *  The JIT Core
  * ================================================================ */
 
+/* Shared dispatch primitive: ensure a compiled block exists for pc.
+ * Does: lookup → compile (if miss) → patch → HT populate.
+ * Both the emulator's run_jit_chain and the playground's pg_run_jit
+ * use this to avoid duplicating the lookup/compile/HT logic.
+ * Profiler macros are no-ops when ENABLE_SUBSYSTEM_PROFILER is off. */
+uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
+{
+    BlockEntry *be = lookup_block(pc);
+    uint32_t *block = be ? be->native : NULL;
+
+    /* Ensure the block is in the hash table for fast JR/JALR dispatch */
+    if (block) {
+        uint32_t h = jit_ht_hash(pc);
+        if (jit_ht[h].psx_pc[0] != pc)
+            jit_ht_add(pc, block);
+    }
+
+    if (!block) {
+        PROF_PUSH(PROF_JIT_COMPILE);
+        block = compile_block(pc);
+        PROF_POP(PROF_JIT_COMPILE);
+        PROF_COUNT_COMPILE();
+        if (block) {
+            be = lookup_block(pc);
+            apply_pending_patches(pc, block);
+            jit_ht_add(pc, block);
+            FlushCache(0);
+            FlushCache(2);
+        }
+    }
+
+    if (out_be) *out_be = be;
+    return block;
+}
+
 static inline int run_jit_chain(uint64_t deadline)
 {
     uint32_t pc = cpu.pc;
@@ -754,18 +789,9 @@ static inline int run_jit_chain(uint64_t deadline)
         return RUN_RES_NORMAL;
     }
 
-    /* Block Lookup - SOTA Page Table */
-    BlockEntry *be = lookup_block(pc);
-    uint32_t *block = be ? be->native : NULL;
-
-    /* Populate hash table for fast JR/JALR dispatch.
-     * Skip if PC is already in slot 0 (common in hot loops). */
-    if (block)
-    {
-        uint32_t h = jit_ht_hash(pc);
-        if (__builtin_expect(jit_ht[h].psx_pc[0] != pc, 0))
-            jit_ht_add(pc, block);
-    }
+    /* Block Lookup + Compile (shared primitive) */
+    BlockEntry *be;
+    uint32_t *block = dynarec_ensure_block(pc, &be);
 
     /* Two-tier SMC detection:
      * Tier 1: O(1) page generation check (fast reject for clean pages).
@@ -791,6 +817,8 @@ static inline int run_jit_chain(uint64_t deadline)
                     jit_ht_remove(pc);
                     block = NULL;
                     be = NULL;
+                    /* Recompile via shared primitive */
+                    block = dynarec_ensure_block(pc, &be);
                 }
                 else
                 {
@@ -803,22 +831,10 @@ static inline int run_jit_chain(uint64_t deadline)
 
     if (!block)
     {
-        PROF_PUSH(PROF_JIT_COMPILE);
-        block = compile_block(pc);
-        PROF_POP(PROF_JIT_COMPILE);
-        PROF_COUNT_COMPILE();
-        if (!block)
-        {
-            DLOG("IBE at %08X\n", (unsigned)pc);
-            cpu.pc = pc;
-            PSX_Exception(6);
-            return RUN_RES_NORMAL;
-        }
-        be = lookup_block(pc);
-        apply_pending_patches(pc, block);
-        jit_ht_add(pc, block);
-        FlushCache(0);
-        FlushCache(2);
+        DLOG("IBE at %08X\n", (unsigned)pc);
+        cpu.pc = pc;
+        PSX_Exception(6);
+        return RUN_RES_NORMAL;
     }
 
     /* Execute block / chain */

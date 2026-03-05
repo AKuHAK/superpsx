@@ -209,25 +209,11 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
         if (phys >= PSX_RAM_SIZE)
             break;
 
-        BlockEntry *be = lookup_block(curr_pc);
-        uint32_t *block = be ? be->native : NULL;
+        BlockEntry *be;
+        uint32_t *block = dynarec_ensure_block(curr_pc, &be);
+        if (!block) break;
 
-        if (!block) {
-            block = compile_block(curr_pc);
-            if (!block) break;
-            be = lookup_block(curr_pc);
-            apply_pending_patches(curr_pc, block);
-            jit_ht_add(curr_pc, block);
-            FlushCache(0);
-            FlushCache(2);
-        } else {
-            uint32_t h = jit_ht_hash(curr_pc);
-            if (jit_ht[h].psx_pc[0] != curr_pc)
-                jit_ht_add(curr_pc, block);
-        }
-
-        block_func_t fn = (block_func_t)block;
-        int32_t remaining = fn(&cpu, psx_ram, psx_bios, cpu.cycles_left);
+        int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cpu.cycles_left);
         cpu.cycles_left = remaining;
 
         if (cpu.block_aborted) {

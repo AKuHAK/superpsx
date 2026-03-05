@@ -473,6 +473,16 @@ int instruction_writes_gpr(uint32_t opcode, int reg);
 uint32_t *compile_block(uint32_t psx_pc);
 
 /* ================================================================
+ *  Shared dispatch primitive — dynarec_run.c
+ *
+ *  Ensures a compiled block exists for the given PC:
+ *    lookup → compile (if miss) → patch → HT populate
+ *  Returns the native block pointer, or NULL on compile failure.
+ *  If out_be is non-NULL, *out_be is set to the BlockEntry (or NULL).
+ * ================================================================ */
+uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be);
+
+/* ================================================================
  *  Function prototypes — dynarec_insn.c
  * ================================================================ */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);

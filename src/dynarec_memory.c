@@ -825,14 +825,22 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
     /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
      * must be ignored (it's a cache invalidation, not a real RAM write).
-     * Read SR, shift bit 16 to bit 0, test it; if set go to slow-path
-     * (WriteWord handles kseg1 exception internally). */
-    EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);      /* a0 = SR */
-    emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
-    emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
-    uint32_t *isc_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @cold (IsC set) */
-    EMIT_NOP();
+     * When block_isc_cached, the bit is pre-cached in SP+0 (3 words).
+     * Otherwise load SR inline and extract the bit (5 words). */
+    uint32_t *isc_branch;
+    if (block_isc_cached) {
+        EMIT_LW(REG_AT, 0, REG_SP);                         /* at = cached ISC   */
+        isc_branch = code_ptr;
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));              /* bne at,zero,@cold */
+        EMIT_NOP();
+    } else {
+        EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);             /* a0 = SR           */
+        emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02));        /* srl  a0, a0, 16   */
+        emit(MK_I(0x0C, REG_A0, REG_A0, 1));               /* andi a0, a0, 1    */
+        isc_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0));              /* bne a0,zero,@cold */
+        EMIT_NOP();
+    }
 
     uint32_t *align_branch = NULL;
     if (size > 1)
@@ -1001,13 +1009,21 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
-    /* Cache Isolation check */
-    EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
-    emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
-    emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
-    uint32_t *isc_branch = code_ptr;
-    emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow */
-    EMIT_NOP();
+    /* Cache Isolation check (cached or inline, same as emit_memory_write) */
+    uint32_t *isc_branch;
+    if (block_isc_cached) {
+        EMIT_LW(REG_AT, 0, REG_SP);
+        isc_branch = code_ptr;
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@slow */
+        EMIT_NOP();
+    } else {
+        EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
+        emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
+        emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
+        isc_branch = code_ptr;
+        emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne  a0, zero, @slow */
+        EMIT_NOP();
+    }
 
     /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = TLB base or psx_ram) */
     emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24));    /* and  at, t8, s3 (phys) */

@@ -1276,13 +1276,21 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_psx_reg(REG_T8, rs);
         EMIT_ADDIU(REG_T8, REG_T8, imm); /* T0 = effective addr */
 
-        /* Cache Isolation check */
-        EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
-        emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
-        emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
-        uint32_t *isc_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → slow */
-        EMIT_NOP();
+        /* Cache Isolation check (cached or inline) */
+        uint32_t *isc_swc2;
+        if (block_isc_cached) {
+            EMIT_LW(REG_AT, 0, REG_SP);
+            isc_swc2 = code_ptr;
+            emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@slow */
+            EMIT_NOP();
+        } else {
+            EMIT_LW(REG_A0, CPU_COP0(12), REG_S0);
+            emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02)); /* srl  a0, a0, 16 */
+            emit(MK_I(0x0C, REG_A0, REG_A0, 1));        /* andi a0, a0, 1 */
+            isc_swc2 = code_ptr;
+            emit(MK_I(0x05, REG_A0, REG_ZERO, 0)); /* bne → slow */
+            EMIT_NOP();
+        }
 
         /* Alignment check */
         emit(MK_I(0x0C, REG_T8, REG_T9, 3)); /* andi t1, t0, 3 */

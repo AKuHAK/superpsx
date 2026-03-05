@@ -15,6 +15,7 @@ uint32_t block_cycle_count = 0;
 uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
+int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+0 for current block */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -507,8 +508,10 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     }
     out->insn_count = count;
 
-    /* Phase 2: forward pass — compute reg read/write masks + access counts */
+    /* Phase 2: forward pass — compute reg read/write masks + access counts
+     *          + detect MTC0 to SR (COP0 reg 12) for ISC optimization */
     uint32_t written = 0, read = 0;
+    int found_mtc0_sr = 0;
     memset(out->reg_access_count, 0, sizeof(out->reg_access_count));
     for (int i = 0; i < count; i++)
     {
@@ -516,6 +519,12 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         uint32_t rmask = dce_read_mask(code[i]);
         written |= wmask;
         read |= rmask;
+        /* Detect MTC0 to SR: opcode 0x10 (COP0), rs=0x04 (MTC0), rd=12 (SR) */
+        if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12)
+            found_mtc0_sr = 1;
+        /* Also detect RFE (COP0 rs=0x10, func=0x10) — modifies SR */
+        if (OP(code[i]) == 0x10 && (code[i] & 0x3F) == 0x10 && (code[i] & 0x02000000))
+            found_mtc0_sr = 1;
         /* Count unique per-instruction register accesses (read or write) */
         uint32_t amask = rmask | wmask;
         while (amask) {
@@ -527,6 +536,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     }
     out->regs_written_mask = written;
     out->regs_read_mask = read;
+    out->has_mtc0_sr = found_mtc0_sr;
 
     /* Compute pinned_written_mask: which pinned regs are written */
     uint32_t pinned_set = 0;
@@ -703,6 +713,20 @@ uint32_t *compile_block(uint32_t psx_pc)
     emit_block_prologue();
     dyn_assign_slots(&scan);
     dyn_load_slots();
+
+    /* ISC optimization: if block doesn't modify SR (no MTC0/RFE), cache the
+     * IsC bit (SR bit 16) in stack slot SP+0 once at block entry.  Per-store
+     * ISC checks then read from the stack (3 words) instead of loading SR
+     * and extracting the bit each time (5 words).  Saves 2 words per store. */
+    if (!scan.has_mtc0_sr) {
+        block_isc_cached = 1;
+        EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);              /* at = SR           */
+        emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02));         /* srl at, at, 16    */
+        emit(MK_I(0x0C, REG_AT, REG_AT, 1));                /* andi at, at, 1    */
+        EMIT_SW(REG_AT, 0, REG_SP);                          /* sw at, 0(sp)      */
+    } else {
+        block_isc_cached = 0;
+    }
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them.
      * Charge a nominal 10 cycles for HLE overhead (the block's instructions
@@ -884,6 +908,9 @@ uint32_t *compile_block(uint32_t psx_pc)
                      * vregs carry over — const propagation across fall-through. */
                     sub_block_start_pc = cur_pc;
                     block_scan(psx_code, SCAN_MAX_INSNS, &scan);
+                    /* If continuation sub-block writes SR, invalidate ISC cache */
+                    if (scan.has_mtc0_sr)
+                        block_isc_cached = 0;
                     continuations++;
 
                     /* Reset branch state for next sub-block */

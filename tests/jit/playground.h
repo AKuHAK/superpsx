@@ -126,6 +126,13 @@
 #define PSX_BLTZAL(rs,off)      MK_I(0x01, (rs), 0x10, (off))
 #define PSX_BGEZAL(rs,off)      MK_I(0x01, (rs), 0x11, (off))
 
+/* COP0 */
+#define PSX_MTC0(rt,rd)  ((0x10u << 26) | (0x04u << 21) | ((rt) << 16) | ((rd) << 11))
+#define PSX_MFC0(rt,rd)  ((0x10u << 26) | (0x00u << 21) | ((rt) << 16) | ((rd) << 11))
+
+/* COP0 register numbers */
+#define PSX_COP0_SR_IDX  12
+
 /* ================================================================
  *  Test Framework
  * ================================================================ */
@@ -211,6 +218,8 @@ extern PGTestCtx pg_ctx;
 #define SET_REG(r, val)    cpu.regs[(r)] = (uint32_t)(val)
 #define SET_HI(val)        cpu.hi = (uint32_t)(val)
 #define SET_LO(val)        cpu.lo = (uint32_t)(val)
+#define SET_COP0(r, val)   cpu.cop0[(r)] = (uint32_t)(val)
+#define GET_COP0(r)        cpu.cop0[(r)]
 #define SET_MEM32(off, val) (*(uint32_t *)(psx_ram + (off))) = (uint32_t)(val)
 #define SET_MEM16(off, val) (*(uint16_t *)(psx_ram + (off))) = (uint16_t)(val)
 #define SET_MEM8(off, val)  (*(uint8_t  *)(psx_ram + (off))) = (uint8_t)(val)

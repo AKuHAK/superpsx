@@ -68,7 +68,8 @@ typedef struct {
     uint32_t regs_written_mask;   /* bit r=1 → PSX reg r is written (any) */
     uint32_t regs_read_mask;      /* bit r=1 → PSX reg r is read */
     int insn_count;               /* Number of PSX instructions in block (incl. delay slot) */
-    int has_mtc0_sr;              /* 1 if block contains MTC0 to COP0 reg 12 (SR) */
+    int has_mtc0_sr;              /* 1 if block contains MTC0 to COP0 reg 12 (SR) or RFE */
+    int has_isc_write;            /* 1 if block has MTC0 to SR (can toggle ISC bit 16) — excludes RFE */
     uint8_t reg_access_count[32]; /* per-reg instruction access frequency (capped 255) */
 } BlockScanResult;
 
@@ -266,6 +267,7 @@ extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;
 extern uint32_t block_pinned_dirty_mask; /* Pinned regs written in current block */
 extern int block_isc_cached;             /* 1 if ISC bit is cached in SP+0 for this block */
+extern int block_has_isc_write;          /* 1 if block can toggle ISC via MTC0 to SR (not RFE) */
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;

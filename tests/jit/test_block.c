@@ -488,6 +488,156 @@ static void test_all_32_regs(void)
 }
 
 /* ================================================================
+ *  Prologue / Register Pin Tests
+ *
+ *  These validate that the prologue/epilogue correctly handles
+ *  partial register use.  With a full prologue all tests pass;
+ *  after partial-prologue optimization they must still pass.
+ *
+ *  Pinned caller-saved: v0→T3, v1→T4, a0→T5, a1→T6, a2→T7
+ *  Pinned callee-saved: s0→S6, s1→S7, gp→FP, sp→S4, ra→S5
+ * ================================================================ */
+
+/* Block only uses v0 (caller-saved pin). All callee-saved pins
+ * (s0, s1, gp, sp) must be preserved untouched.
+ * ra is set by BEGIN_TEST to PG_HALT_BASE, so we check it separately. */
+static void test_prologue_only_caller_pins(void)
+{
+    BEGIN_TEST("prologue_only_caller_pins");
+    /* Pre-set callee-saved pinned regs to sentinel values */
+    SET_REG(R_S0, 0x10101010);
+    SET_REG(R_S1, 0x20202020);
+    SET_REG(R_GP, 0x30303030);
+    /* sp is already set to 0x801FFF00 by BEGIN_TEST */
+    /* ra is set to PG_HALT_BASE by BEGIN_TEST */
+
+    /* Also set caller-saved pins we don't use */
+    SET_REG(R_V1, 0xBBBBBBBB);
+    SET_REG(R_A1, 0xCCCCCCCC);
+    SET_REG(R_A2, 0xDDDDDDDD);
+
+    /* Block: only modifies v0, reads a0 */
+    SET_REG(R_A0, 5);
+    EMIT(PSX_ADDIU(R_V0, R_A0, 10));  /* v0 = a0 + 10 = 15 */
+    RUN(2000);
+
+    /* v0 should have the result */
+    EXPECT_REG(R_V0, 15);
+    /* Callee-saved pins must be untouched */
+    EXPECT_REG(R_S0, 0x10101010);
+    EXPECT_REG(R_S1, 0x20202020);
+    EXPECT_REG(R_GP, 0x30303030);
+    EXPECT_REG(R_SP, 0x801FFF00u);
+    /* Unused caller-saved pins should also be preserved */
+    EXPECT_REG(R_V1, 0xBBBBBBBB);
+    EXPECT_REG(R_A1, 0xCCCCCCCC);
+    EXPECT_REG(R_A2, 0xDDDDDDDD);
+    END_TEST();
+}
+
+/* Block only uses callee-saved pins (s0, s1, gp).
+ * Caller-saved pins (v0, v1, a0, a1, a2) must be preserved. */
+static void test_prologue_only_callee_pins(void)
+{
+    BEGIN_TEST("prologue_only_callee_pins");
+    /* Pre-set caller-saved pins to sentinel values */
+    SET_REG(R_V0, 0xAA000001);
+    SET_REG(R_V1, 0xAA000002);
+    SET_REG(R_A0, 0xAA000003);
+    SET_REG(R_A1, 0xAA000004);
+    SET_REG(R_A2, 0xAA000005);
+
+    /* Block: modify s0, read s1 */
+    SET_REG(R_S1, 100);
+    EMIT(PSX_ADDIU(R_S0, R_S1, 50));  /* s0 = s1 + 50 = 150 */
+    RUN(2000);
+
+    /* s0 should have the answer */
+    EXPECT_REG(R_S0, 150);
+    EXPECT_REG(R_S1, 100);
+    /* All caller-saved pins must be untouched */
+    EXPECT_REG(R_V0, 0xAA000001);
+    EXPECT_REG(R_V1, 0xAA000002);
+    EXPECT_REG(R_A0, 0xAA000003);
+    EXPECT_REG(R_A1, 0xAA000004);
+    EXPECT_REG(R_A2, 0xAA000005);
+    END_TEST();
+}
+
+/* Block uses NO pinned registers at all — only non-pinned regs (t0-t7).
+ * All 10 pinned regs must survive untouched. */
+static void test_prologue_no_pinned_regs(void)
+{
+    BEGIN_TEST("prologue_no_pinned_regs");
+    /* Pre-set all pinned regs */
+    SET_REG(R_V0, 0x11000001);
+    SET_REG(R_V1, 0x11000002);
+    SET_REG(R_A0, 0x11000003);
+    SET_REG(R_A1, 0x11000004);
+    SET_REG(R_A2, 0x11000005);
+    SET_REG(R_S0, 0x11000006);
+    SET_REG(R_S1, 0x11000007);
+    SET_REG(R_GP, 0x11000008);
+    /* sp set by BEGIN_TEST, ra set by BEGIN_TEST */
+
+    /* Block: only uses non-pinned regs t0, t1 */
+    SET_REG(R_T0, 7);
+    EMIT(PSX_ADDIU(R_T1, R_T0, 3));   /* t1 = t0 + 3 = 10 */
+    RUN(2000);
+
+    EXPECT_REG(R_T1, 10);
+    /* ALL pinned regs must survive */
+    EXPECT_REG(R_V0, 0x11000001);
+    EXPECT_REG(R_V1, 0x11000002);
+    EXPECT_REG(R_A0, 0x11000003);
+    EXPECT_REG(R_A1, 0x11000004);
+    EXPECT_REG(R_A2, 0x11000005);
+    EXPECT_REG(R_S0, 0x11000006);
+    EXPECT_REG(R_S1, 0x11000007);
+    EXPECT_REG(R_GP, 0x11000008);
+    EXPECT_REG(R_SP, 0x801FFF00u);
+    END_TEST();
+}
+
+/* Block uses ALL 10 pinned regs — full prologue is required.
+ * This is the "worst case" that must still work after optimization. */
+static void test_prologue_all_pinned_rw(void)
+{
+    BEGIN_TEST("prologue_all_pinned_rw");
+    /* Set up all 10 pinned regs with known values */
+    SET_REG(R_V0, 1);
+    SET_REG(R_V1, 2);
+    SET_REG(R_A0, 3);
+    SET_REG(R_A1, 4);
+    SET_REG(R_A2, 5);
+    SET_REG(R_S0, 10);
+    SET_REG(R_S1, 20);
+    SET_REG(R_GP, 30);
+    /* sp is special (used by EE stack) — don't modify via PSX code */
+    /* ra is set by BEGIN_TEST */
+
+    /* Block: accumulate caller-saved into v0, callee-saved into s0 */
+    EMIT(PSX_ADDU(R_V0, R_V0, R_V1));   /* v0 = 1+2 = 3 */
+    EMIT(PSX_ADDU(R_V0, R_V0, R_A0));   /* v0 = 3+3 = 6 */
+    EMIT(PSX_ADDU(R_V0, R_V0, R_A1));   /* v0 = 6+4 = 10 */
+    EMIT(PSX_ADDU(R_V0, R_V0, R_A2));   /* v0 = 10+5 = 15 */
+    EMIT(PSX_ADDU(R_S0, R_S0, R_S1));   /* s0 = 10+20 = 30 */
+    EMIT(PSX_ADDU(R_S0, R_S0, R_GP));   /* s0 = 30+30 = 60 */
+    RUN(2000);
+
+    EXPECT_REG(R_V0, 15);
+    EXPECT_REG(R_S0, 60);
+    /* Regs that were only read should keep their values */
+    EXPECT_REG(R_V1, 2);
+    EXPECT_REG(R_A0, 3);
+    EXPECT_REG(R_A1, 4);
+    EXPECT_REG(R_A2, 5);
+    EXPECT_REG(R_S1, 20);
+    EXPECT_REG(R_GP, 30);
+    END_TEST();
+}
+
+/* ================================================================
  *  Category Runner
  * ================================================================ */
 
@@ -509,4 +659,10 @@ void pg_run_block_tests(void)
     test_loop_accumulate_memory();
     test_conditional_both_paths();
     test_all_32_regs();
+
+    printf("\n--- Prologue / Register Pin ---\n");
+    test_prologue_only_caller_pins();
+    test_prologue_only_callee_pins();
+    test_prologue_no_pinned_regs();
+    test_prologue_all_pinned_rw();
 }

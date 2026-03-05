@@ -6,7 +6,7 @@
  *   test_memory.c — Load/Store                                  (6 tests)
  *   test_branch.c — Branches, REGIMM                            (7 tests)
  *   test_block.c  — Interactions, cross-block, loops            (14 tests)
- *                                                         Total: 48 tests
+ *                                                         Total: 59 tests
  */
 #include "playground.h"
 

@@ -664,8 +664,16 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     if (is_const)
     {
         uint32_t phys = const_addr & 0x1FFFFFFF;
-        /* Aligned RAM access? */
-        if ((phys < PSX_RAM_SIZE) && (phys % size == 0))
+        /* Aligned RAM access?
+         *
+         * When the block can toggle Cache Isolation (block_has_isc_write)
+         * and the address is ISC-eligible (not KSEG1), skip the fast path
+         * and fall through to the generic path which already has ISC checks.
+         * This avoids adding 5 ISC-check words per store in hot BIOS cache
+         * flush blocks that have many sequential const-address stores. */
+        int isc_eligible = block_has_isc_write &&
+                           ((const_addr & 0xE0000000) != 0xA0000000);
+        if ((phys < PSX_RAM_SIZE) && (phys % size == 0) && !isc_eligible)
         {
             emit_load_psx_reg(REG_T9, rt_psx);
             emit_load_imm32(REG_T8, (uint32_t)psx_ram + phys);

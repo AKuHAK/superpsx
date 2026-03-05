@@ -16,6 +16,7 @@ uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
 int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+0 for current block */
+int block_has_isc_write = 0;  /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -512,6 +513,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
      *          + detect MTC0 to SR (COP0 reg 12) for ISC optimization */
     uint32_t written = 0, read = 0;
     int found_mtc0_sr = 0;
+    int found_isc_write = 0;
     memset(out->reg_access_count, 0, sizeof(out->reg_access_count));
     for (int i = 0; i < count; i++)
     {
@@ -520,9 +522,12 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
         written |= wmask;
         read |= rmask;
         /* Detect MTC0 to SR: opcode 0x10 (COP0), rs=0x04 (MTC0), rd=12 (SR) */
-        if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12)
+        if (OP(code[i]) == 0x10 && RS(code[i]) == 0x04 && RD(code[i]) == 12) {
             found_mtc0_sr = 1;
-        /* Also detect RFE (COP0 rs=0x10, func=0x10) — modifies SR */
+            found_isc_write = 1;  /* MTC0 to SR can toggle ISC bit 16 */
+        }
+        /* Also detect RFE (COP0 rs=0x10, func=0x10) — modifies SR bits 5:0
+         * but does NOT touch ISC bit 16 */
         if (OP(code[i]) == 0x10 && (code[i] & 0x3F) == 0x10 && (code[i] & 0x02000000))
             found_mtc0_sr = 1;
         /* Count unique per-instruction register accesses (read or write) */
@@ -537,6 +542,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
     out->regs_written_mask = written;
     out->regs_read_mask = read;
     out->has_mtc0_sr = found_mtc0_sr;
+    out->has_isc_write = found_isc_write;
 
     /* Compute pinned_written_mask: which pinned regs are written */
     uint32_t pinned_set = 0;
@@ -727,6 +733,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     } else {
         block_isc_cached = 0;
     }
+    block_has_isc_write = scan.has_isc_write;
 
     /* Inject BIOS HLE hooks natively so that DBL jumps do not bypass them.
      * Charge a nominal 10 cycles for HLE overhead (the block's instructions
@@ -911,6 +918,8 @@ uint32_t *compile_block(uint32_t psx_pc)
                     /* If continuation sub-block writes SR, invalidate ISC cache */
                     if (scan.has_mtc0_sr)
                         block_isc_cached = 0;
+                    if (scan.has_isc_write)
+                        block_has_isc_write = 1;
                     continuations++;
 
                     /* Reset branch state for next sub-block */

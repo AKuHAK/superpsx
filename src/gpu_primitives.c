@@ -130,6 +130,74 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     return result;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  Debug Texture Overlay — colored bounding boxes + printf log
+ *
+ *  Draws a colored LINE_STRIP outline around each textured primitive:
+ *    RED   = 4BPP (tex_format=0)
+ *    GREEN = 8BPP (tex_format=1)
+ *    CYAN  = 15BPP / SW decoded
+ *
+ *  Enable: cmake -DENABLE_TEX_DEBUG=ON or #define TEX_DEBUG_OVERLAY 1
+ * ═══════════════════════════════════════════════════════════════════ */
+#ifdef TEX_DEBUG_OVERLAY
+
+static uint32_t tex_debug_prim_count = 0;
+
+/* Emit colored bounding-box outline and log primitive info to stdout.
+ * sx0/sy0/sx1/sy1 are RAW PSX screen coords (before draw_offset).
+ * tex_fmt: 0=4BPP, 1=8BPP, 2=15BPP.  page_id: 0..31 (-1 if N/A). */
+static void emit_debug_box(int sx0, int sy0, int sx1, int sy1,
+                           int tex_fmt, int page_id,
+                           int tbp0, int cbp,
+                           const char *prim_type)
+{
+    /* Color by format */
+    uint8_t r = (tex_fmt == 0) ? 0xFF : 0x30;
+    uint8_t g = (tex_fmt == 1) ? 0xFF : 0x30;
+    uint8_t b = (tex_fmt >= 2) ? 0xFF : 0x30;
+
+    int32_t gx0 = ((int32_t)sx0 + draw_offset_x + 2048) << 4;
+    int32_t gy0 = ((int32_t)sy0 + draw_offset_y + 2048) << 4;
+    int32_t gx1 = ((int32_t)sx1 + draw_offset_x + 2048) << 4;
+    int32_t gy1 = ((int32_t)sy1 + draw_offset_y + 2048) << 4;
+
+    /* 13 regs: TEST + DTHE + PRIM + 5×(RGBAQ + XYZ2) */
+    Push_GIF_Tag(GIF_TAG_LO(13, 1, 0, 0, 0, 1), GIF_REG_AD);
+    Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
+    Push_GIF_Data(0, GS_REG_DTHE);
+
+    uint64_t prim = 3; /* LINE_STRIP */
+    prim |= (1 << 8);  /* FST */
+    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim), GS_REG_PRIM);
+
+    uint64_t rgbaq = GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000);
+
+    /* TL → TR → BR → BL → TL */
+    Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+    Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
+    Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+    Push_GIF_Data(GS_SET_XYZ(gx1, gy0, 0), GS_REG_XYZ2);
+    Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+    Push_GIF_Data(GS_SET_XYZ(gx1, gy1, 0), GS_REG_XYZ2);
+    Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+    Push_GIF_Data(GS_SET_XYZ(gx0, gy1, 0), GS_REG_XYZ2);
+    Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
+    Push_GIF_Data(GS_SET_XYZ(gx0, gy0, 0), GS_REG_XYZ2);
+
+    /* Invalidate lazy state */
+    gs_state.valid = 0;
+
+    /* Printf log */
+    printf("[TEXDBG] #%u %s fmt=%d pg=%d tbp=%d cbp=%d sc=(%d,%d)+(%dx%d)\n",
+           tex_debug_prim_count, prim_type, tex_fmt, page_id,
+           tbp0, cbp,
+           sx0, sy0, sx1 - sx0, sy1 - sy0);
+    tex_debug_prim_count++;
+}
+
+#endif /* TEX_DEBUG_OVERLAY */
+
 /* Triangle area from integer vertices (absolute, in pixels).
  * Uses the cross-product / shoelace formula.                          */
 static inline uint32_t tri_area_abs(int16_t x0, int16_t y0,
@@ -410,7 +478,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                             want_tex0 |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
                             want_tex0 |= (uint64_t)poly_hw_cbp << 37;
                             want_tex0 |= (uint64_t)GS_PSM_16 << 51;
-                            want_tex0 |= (uint64_t)1 << 61;
+                            want_tex0 |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
                             /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                             want_clamp = Compute_TexWin_Clamp();
                         }
@@ -525,6 +593,23 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     }
                     /* No state restore — lazy tracking handles next primitive */
                 }
+#ifdef TEX_DEBUG_OVERLAY
+                if (is_textured)
+                {
+                    int bx0 = verts[0].x, by0 = verts[0].y;
+                    int bx1 = bx0, by1 = by0;
+                    for (int vi = 1; vi < 4; vi++) {
+                        if (verts[vi].x < bx0) bx0 = verts[vi].x;
+                        if (verts[vi].y < by0) by0 = verts[vi].y;
+                        if (verts[vi].x > bx1) bx1 = verts[vi].x;
+                        if (verts[vi].y > by1) by1 = verts[vi].y;
+                    }
+                    emit_debug_box(bx0, by0, bx1, by1,
+                                   tex_page_format,
+                                   (poly_tex_page_x >> 6) + ((poly_tex_page_y >> 8) << 4),
+                                   poly_hw_tbp0, poly_hw_cbp, "QUAD");
+                }
+#endif
             }
         }
         else
@@ -602,7 +687,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         tw_tex0 |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
                         tw_tex0 |= (uint64_t)tri_hw_cbp << 37;
                         tw_tex0 |= (uint64_t)GS_PSM_16 << 51;
-                        tw_tex0 |= (uint64_t)1 << 61;
+                        tw_tex0 |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         tw_clamp = Compute_TexWin_Clamp();
                     }
@@ -708,6 +793,23 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         Push_GIF_Data(GS_SET_XYZ(gx, gy, 0), GS_REG_XYZ2);
             }
             /* No state restore — lazy tracking handles next primitive */
+#ifdef TEX_DEBUG_OVERLAY
+            if (is_textured)
+            {
+                int bx0 = verts[0].x, by0 = verts[0].y;
+                int bx1 = bx0, by1 = by0;
+                for (int vi = 1; vi < 3; vi++) {
+                    if (verts[vi].x < bx0) bx0 = verts[vi].x;
+                    if (verts[vi].y < by0) by0 = verts[vi].y;
+                    if (verts[vi].x > bx1) bx1 = verts[vi].x;
+                    if (verts[vi].y > by1) by1 = verts[vi].y;
+                }
+                emit_debug_box(bx0, by0, bx1, by1,
+                               tex_page_format,
+                               (poly_tex_page_x >> 6) + ((poly_tex_page_y >> 8) << 4),
+                               tri_hw_tbp0, tri_hw_cbp, "TRI");
+            }
+#endif
         }
         return idx;
     }
@@ -1027,7 +1129,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         want_tex0_r |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
                         want_tex0_r |= (uint64_t)rect_hw_cbp << 37;
                         want_tex0_r |= (uint64_t)GS_PSM_16 << 51;
-                        want_tex0_r |= (uint64_t)1 << 61;
+                        want_tex0_r |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         want_clamp_r = Compute_TexWin_Clamp();
                     }
@@ -1113,6 +1215,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
                 Push_GIF_Data(GS_SET_XYZ(sgx1, sgy1, 0), GS_REG_XYZ2);
                 /* No state restore — lazy tracking handles next primitive */
+#ifdef TEX_DEBUG_OVERLAY
+                emit_debug_box(x, y, x + w, y + h,
+                               tex_page_format,
+                               (tex_page_x >> 6) + ((tex_page_y >> 8) << 4),
+                               rect_hw_tbp0, rect_hw_cbp, "RECT");
+#endif
             }
         }
         else

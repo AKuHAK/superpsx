@@ -271,6 +271,10 @@ void GPU_WriteGP0(uint32_t data)
                 vram_gen_counter++;
                 Tex_Cache_DirtyRegion(vram_tx_x, vram_tx_y, w, h);
                 Start_VRAM_Transfer(vram_tx_x, vram_tx_y, w, h);
+#ifdef TEX_DEBUG_OVERLAY
+                if (w * h > 200)
+                    printf("[C2V] (%d,%d) %dx%d\n", vram_tx_x, vram_tx_y, w, h);
+#endif
             }
             else if (cmd == 0xC0)
             {
@@ -309,6 +313,9 @@ void GPU_WriteGP0(uint32_t data)
                     h = 0x200;
 
                 DLOG("GP0(80) VRAM Copy: (%d,%d)->(%d,%d) %dx%d\n", sx, sy, dx, dy, w, h);
+#ifdef TEX_DEBUG_OVERLAY
+                printf("[V2V] (%d,%d)->(%d,%d) %dx%d\n", sx, sy, dx, dy, w, h);
+#endif
 
                 if (psx_vram_shadow)
                 {
@@ -478,6 +485,9 @@ void GPU_WriteGP0(uint32_t data)
             cache_e3 = data;
             draw_clip_x1 = data & 0x3FF;
             draw_clip_y1 = (data >> 10) & 0x3FF;
+#ifdef TEX_DEBUG_OVERLAY
+            printf("[DRAW] E3 draw_area_tl=(%d,%d)\n", draw_clip_x1, draw_clip_y1);
+#endif
             {
                 Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
                 uint64_t scax0 = draw_clip_x1;
@@ -499,6 +509,9 @@ void GPU_WriteGP0(uint32_t data)
             cache_e4 = data;
             draw_clip_x2 = data & 0x3FF;
             draw_clip_y2 = (data >> 10) & 0x3FF;
+#ifdef TEX_DEBUG_OVERLAY
+            printf("[DRAW] E4 draw_area_br=(%d,%d)\n", draw_clip_x2, draw_clip_y2);
+#endif
             {
                 Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
                 uint64_t scax0 = draw_clip_x1;
@@ -689,6 +702,9 @@ void GPU_WriteGP1(uint32_t data)
             cache_gp1_05 = data;
             uint32_t x = data & 0x3FF;
             uint32_t y = (data >> 10) & 0x1FF;
+#ifdef TEX_DEBUG_OVERLAY
+            printf("[DISP] GP1(05) display_start=(%u,%u)\n", x, y);
+#endif
 
             uint64_t dispfb = 0;
             dispfb |= (uint64_t)0 << 0;

@@ -175,7 +175,7 @@ static void test_expansion_loadstore(void)
     check_expansion("LW", ee, 135, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("SW", ee, 440, &pg_ctx);
+    check_expansion("SW", ee, 400, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_LB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
     check_expansion("LB", ee, 135, &pg_ctx);
@@ -212,7 +212,7 @@ static void test_expansion_gte(void)
     check_expansion("LWC2", ee, 150, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("SWC2", ee, 470, &pg_ctx);
+    check_expansion("SWC2", ee, 427, &pg_ctx);
 
     END_TEST();
 }
@@ -248,7 +248,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T3, 0, R_SP),
         };
         ee = compile_and_measure(gte_xform, 5, 3, expansion_enable_cop2);
-        check_expansion("GTE xform", ee, 195, &pg_ctx);
+        check_expansion("GTE xform", ee, 192, &pg_ctx);
     }
 
     /* SW burst */
@@ -260,7 +260,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T4, 12, R_SP),
         };
         ee = compile_and_measure(sw_burst, 4, 4, NULL);
-        check_expansion("SW burst", ee, 445, &pg_ctx);
+        check_expansion("SW burst", ee, 406, &pg_ctx);
     }
 
     END_TEST();

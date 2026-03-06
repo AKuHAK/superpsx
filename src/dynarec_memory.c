@@ -323,6 +323,25 @@ int __attribute__((used)) TLB_Backpatch(uint32_t epc)
 void cold_slow_emit_all(void)
 {
     int i;
+
+    /* P10: Check if any cold entry needs abort check → emit shared stub.
+     * Instead of inlining emit_abort_check (5-13 words) per cold entry,
+     * share a single abort check subroutine per block (JAL + delay = 2 words).
+     * The shared stub flushes ALL assigned slots unconditionally (safe because
+     * the abort path is rare and non-dirty slot values match cpu.regs[]). */
+    int has_any_abort = 0;
+    for (i = 0; i < cold_count; i++)
+        if (cold_queue[i].has_abort)
+        {
+            has_any_abort = 1;
+            break;
+        }
+
+    uint32_t *block_abort_stub = NULL;
+    /* P10: collect JAL placeholders for backpatching */
+    uint32_t *abort_jal_patches[MAX_COLD_SLOW];
+    int abort_jal_count = 0;
+
     for (i = 0; i < cold_count; i++)
     {
         ColdSlowEntry *e = &cold_queue[i];
@@ -360,7 +379,13 @@ void cold_slow_emit_all(void)
         EMIT_NOP();
 
         if (e->has_abort)
-            emit_abort_check((uint32_t)e->cycle_offset);
+        {
+            /* P10: JAL placeholder to shared block abort stub (backpatched).
+             * Pass -cycle_offset in T9 via delay slot. */
+            abort_jal_patches[abort_jal_count++] = code_ptr;
+            emit(0); /* JAL placeholder — backpatched after stub emitted */
+            EMIT_ADDIU(REG_T9, REG_ZERO, -(int16_t)e->cycle_offset);
+        }
 
         /* Sign extension for signed byte/halfword reads */
         if (e->type == 0 && e->is_signed && e->size < 4)
@@ -382,6 +407,45 @@ void cold_slow_emit_all(void)
             emit(MK_I(0x04, REG_ZERO, REG_ZERO, (uint16_t)(ret_off & 0xFFFF)));
             EMIT_NOP();
         }
+    }
+
+    /* P10: Emit shared abort check stub (once per block, after all cold entries).
+     * Protocol: T9 = -cycle_offset (set by caller's delay slot).
+     * Checks cpu.block_aborted; if set, flushes all assigned slots and aborts. */
+    if (has_any_abort)
+    {
+        block_abort_stub = code_ptr;
+
+        EMIT_LW(REG_AT, CPU_BLOCK_ABORTED, REG_S0); /* at = block_aborted */
+        uint32_t *beq_skip = code_ptr;
+        emit(MK_I(0x04, REG_AT, REG_ZERO, 0)); /* BEQ at, $0, @skip (placeholder) */
+        EMIT_NOP();
+
+        /* Abort path: flush ALL assigned dynamic slots unconditionally.
+         * Non-dirty slots write back the same value (harmless; abort is rare). */
+        if (dyn_slots_active)
+        {
+            for (int s = 0; s < DYN_SLOT_COUNT; s++)
+            {
+                if (dyn_slot_psx[s] >= 0)
+                    EMIT_SW(REG_T0 + s, CPU_REG(dyn_slot_psx[s]), REG_S0);
+            }
+        }
+
+        /* Deduct partial cycles (T9 = -cycle_offset from caller) + abort */
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_ADDU(REG_S2, REG_S2, REG_T9); /* delay slot (P9) */
+
+        /* @skip: not aborted — return to cold path caller */
+        int32_t skip_off = (int32_t)(code_ptr - beq_skip - 1);
+        *beq_skip = MK_I(0x04, REG_AT, REG_ZERO, skip_off & 0xFFFF);
+
+        EMIT_JR(REG_RA);
+        EMIT_NOP();
+
+        /* Backpatch all JAL placeholders to point to block_abort_stub */
+        for (int p = 0; p < abort_jal_count; p++)
+            *abort_jal_patches[p] = MK_J(3, (uint32_t)block_abort_stub >> 2);
     }
 
     cold_count = 0;

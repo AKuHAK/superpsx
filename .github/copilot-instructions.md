@@ -53,14 +53,14 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 72 micro-tests split across 5 category files.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 77 micro-tests split across 7 category files, plus an expansion ratio report.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 72/72 passed) — 15s is enough
-perl -e 'alarm 15; exec @ARGV' make -C build run-playground \
+# Run playground (expect: 77/77 passed) — 20s is enough
+perl -e 'alarm 20; exec @ARGV' make -C build run-playground \
   > ./build/playground_out.txt 2>&1; \
 pkill -f pcsx2 2>/dev/null; \
 grep -E "Results|FAIL" ./build/playground_out.txt
@@ -69,25 +69,27 @@ grep -E "Results|FAIL" ./build/playground_out.txt
 **Key files:**
 
 - `tests/jit/playground.h` — DSL header (opcode encoding macros, test framework macros)
-- `tests/jit/playground_main.c` — Entry point, stubs, `pg_run_jit()` dispatch loop
-- `tests/jit/playground_tests.c` — Thin runner calling the 4 category runners
+- `tests/jit/playground_main.c` — Entry point, `pg_run_jit()` dispatch loop
+- `tests/jit/playground_tests.c` — Thin runner calling all category runners
 - `tests/jit/test_alu.c` — ALU, shifts, mul/div, comparisons, HI/LO (21 tests)
 - `tests/jit/test_memory.c` — Load/Store + ISC: LW/SW, LB/SB, LH/SH, LWL/LWR, SWL/SWR, MFC0, ISC checks (13 tests)
 - `tests/jit/test_branch.c` — Branches: BEQ, BNE, BLTZ, BGEZ, BLEZ, BGTZ, delay slots (7 tests)
 - `tests/jit/test_block.c` — Interactions, cross-block, loops, nested JAL, all-32-regs, dynamic alloc stress, prologue/pin (21 tests)
 - `tests/jit/test_dirty.c` — Dirty writeback: single/multi slot, cross-block, branch paths, loop, SW-to-RAM, three-block chain (10 tests)
+- `tests/jit/test_gte.c` — GTE/COP2: MTC2/MFC2 round-trip, slot preservation, CU2 dirty-mask regression (5 tests)
+- `tests/jit/test_expansion.c` — Expansion ratio report (compile-only, no pass/fail; measures EE words per PSX instruction)
 - `docs/jit_playground.md` — Design document
 
-**Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, `pg_run_block_tests`, or `pg_run_dirty_tests`).
+**Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, `pg_run_block_tests`, `pg_run_dirty_tests`, or `pg_run_gte_tests`).
 
-**Before committing JIT changes:** run the playground (`72/72 passed`) in addition to the standard GTE/CPU/Timer tests.
+**Before committing JIT changes:** run the playground (`77/77 passed`) in addition to the standard GTE/CPU/Timer tests.
 
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 72/72 passed** (for dynarec changes)
+2. **JIT Playground: 77/77 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
 4. CPU: Result 00000101
 5. Timer test: must complete without hangs
@@ -120,18 +122,21 @@ Dynamic slots use compile-time dirty tracking via `dyn_dirty_mask` (uint8_t):
 - `dyn_flush_dirty_slots()`: emit SW only for dirty slots, clear mask
 - `dyn_flush_all_slots()`: emit SW for ALL assigned slots, clear mask
 
-7 flush sites labeled A-G:
+7 flush sites labeled A-G — **ALL use dirty-only** flush:
 
-- **A** (emit_call_c): `flush-all` — mid-block full C call
-- **B** (emit_call_c_lite): `flush-all` — mid-block lite C call
+- **A** (emit_call_c): `dirty-only` — mid-block full C call
+- **B** (emit_call_c_lite): `dirty-only` — mid-block lite C call
 - **C** (emit_abort_check): `dirty-only` — conditional abort path
-- **D** (deferred taken): `flush-all` — branch-taken cold code
+- **D** (deferred taken): `dirty-only` — branch-taken cold code
 - **E** (block epilogue): `dirty-only` — block exit return to C
 - **F** (branch epilogue): `dirty-only` — direct block link exit
 - **G** (JR/JALR dispatch): `dirty-only` — register jump exit
 
-A, B, D require flush-all (dirty-only causes glitches in Crash Bandicoot — root cause TBD).
-C, E, F, G work correctly with dirty-only.
+**Critical invariant:** Any `emit_call_c` inside a conditional (BNE-skipped) code path
+must save/restore `dyn_dirty_mask`. The CU exception checks (COP1/COP2/COP3/LWC*/SWC*)
+all do this with `{ uint8_t saved = dyn_dirty_mask; emit_call_c(...); dyn_dirty_mask = saved; }`.
+Without this, the compile-time dirty mask is cleared but the runtime SWs only execute
+on the exception path, silently losing dirty slot values on the normal path.
 
 ## Code Buffer Layout
 
@@ -143,7 +148,14 @@ Trampolines at fixed offsets in `code_buffer[]`:
 
 ## Current Roadmap
 
-See `docs/jit_optimization_roadmap.md`. Next major task: refactor to 2-pass compilation (Scan + Emit).
+See `docs/jit_optimization_roadmap.md` for the master roadmap.
+See `docs/expansion_optimization_proposals.md` for expansion ratio data and reduction proposals.
+
+Next major optimization targets (by priority):
+1. **Hoist CU2 check** to block prologue (COP2: 24x → ~8x)
+2. **Inline MTC2/MFC2** data transfers (COP2 xfer: 24x → ~3x)
+3. **SMRV** memory fast-path (LW/SW: 23-27x → ~8-10x)
+4. **DIV simplification** (15x → ~5x)
 
 ## File Management
 

@@ -4,8 +4,8 @@
 
 | # | Optimización | Estado | Detalles |
 |---|---|---|---|
-| 1 | Register Pinning | ✅ 10 GPR + 4 infra | v0,v1,a0-a2→T3-T7 · s0,s1→S6,S7 · gp→FP · sp→S4 · ra→S5. Infra: S0=cpu, S1=RAM, S2=cycles, S3=mask |
-| 2 | Dynamic Slots (T0/T1/T2) | ✅ 3 slots | Frecuencia-based `dyn_assign_slots()`. **Write-through only** — every store also writes `cpu.regs[]`. Partial dirty tracking was reverted (commit 7447029) because deferred flushes caused Crash Bandicoot to read stale `cpu.regs[]` values through some code paths |
+| 1 | Register Pinning | ✅ 4 pinned + 4 infra | gp→S6, sp→S4, fp→S7, ra→S5. Infra: S0=cpu, S1=RAM, S2=cycles, S3=mask |
+| 2 | Dynamic Slots (T0-T7) | ✅ 8 slots + dirty writeback | Frequency-based `dyn_assign_slots()`. **Dirty writeback**: only modified slots are flushed to `cpu.regs[]` at sync points via `dyn_dirty_mask`. All 7 flush sites use dirty-only mode. |
 | 3 | Constant Propagation | ✅ | `vregs[32]` con `dirty_const_mask`, lazy materialization |
 | 4 | Dead Code Elimination | ✅ | Backward liveness en `block_scan()`, ventana 64 insn (`dce_dead_mask`) |
 | 5 | Direct Block Linking | ✅ | J-based DBL con back-patching + SMC check (page_gen + hash) |
@@ -24,62 +24,61 @@
 | 18 | Mem Slow-Path Trampoline | ✅ | `code_buffer[128]`: partial cycle accounting (`partial_block_cycles`) |
 | 19 | BIOS HLE Native Injection | ✅ | A0/B0/C0 hooks compiled inline en bloques |
 | 20 | Branch/Load Delay Slots | ✅ | `in_delay_slot` tracking + `pending_load_reg/apply_now` |
+| 21 | CU Exception Dirty Mask Fix | ✅ | save/restore `dyn_dirty_mask` around conditional `emit_call_c(Helper_CU_Exception)` in 9 COP handler sites |
 
 ---
 
-## Optimizaciones pendientes (ordenadas por impacto/esfuerzo)
+## Optimizaciones pendientes (ordenadas por impacto — data de expansion_optimization_proposals.md)
 
-### 1. ~~Dirty Bitmask para flush_pinned~~ → Impacto mínimo
-**Impacto:** ~~Alto (5-10%)~~ → **<0.2%** tras optimizaciones de trampoline  
-**Estado:** 🔄 Infraestructura lista, pero **no vale la pena cablear**
-
-La estimación original asumía flush por bloque y por C call. Tras las optimizaciones actuales:
-- Hot path (DBL): **zero flush** — regs se mantienen en HW
-- Abort trampoline: compartido → no puede usar mask por bloque
-- call_c trampoline: compartido → flush completo para seguridad
-- Único flush emitido: `emit_block_epilogue()` (solo SYSCALL/BREAK = raro)
-
-Overhead real: ~590 SWs/frame (~0.2% del tiempo de frame). No justifica el esfuerzo.
-
----
-
-### 2. SMRV (Speculative Memory Region Validation)
-**Impacto:** Alto (5-8%) · **Esfuerzo:** 2-4 horas · **Riesgo:** Medio  
+### 1. Hoist CU2 Check to Block Prologue
+**Impacto:** Alto (COP2: 24x → ~8x) · **Esfuerzo:** 1-2 horas · **Riesgo:** Bajo
 **Estado actual:** ❌ No empezado
 
-El hot path de LW/SW emite ~8 instrucciones: `AND S3` → `SRL+SLTIU` range check → branch → `ADDU+LW`. Con predicción de que el base register apunta a RAM (>95% de accesos), se emite un fast path optimista sin range check.
-
-**Alternativa simple:** Inline cache per-site. Cold path backpatchea el branch para fast path directo la próxima vez.
+Every COP2 instruction independently checks SR.CU2 (~9 words + emit_call_c dead code).
+Hoist to prologue: one check per block, skip all per-instruction checks.
+For 5 COP2 insns: eliminates ~45 words of redundant checks.
 
 ---
 
-### 3. FlushCache Batching
-**Impacto:** Bajo-Medio (1-3%) · **Esfuerzo:** 30 min · **Riesgo:** Bajo  
+### 2. Inline MTC2/MFC2 Data Transfers
+**Impacto:** Alto (COP2 xfer: 24x → ~3x combinado con P1) · **Esfuerzo:** 1-2 horas · **Riesgo:** Bajo
 **Estado actual:** ❌ No empezado
 
-`FlushCache(0); FlushCache(2);` se llama después de cada `compile_block`. En PS2 cada FlushCache es un syscall (~50 ciclos EE). Con batching se acumula y se hace flush una vez antes de ejecutar.
+MFC2 already inlines most reads. MTC2 still calls GTE_WriteData via lite trampoline.
+Most GTE data registers are plain storage — inline as `SW reg, cp2_data[rd](S0)`.
 
 ---
 
-### 4. LQ/SQ Bulk Flush/Reload (PS2-específico)
-**Impacto:** Medio (3-5%) · **Esfuerzo:** 1 día · **Riesgo:** Bajo  
+### 3. SMRV Memory Fast-Path
+**Impacto:** Muy Alto (LW/SW: 23-27x → ~8-10x) · **Esfuerzo:** 2-4 horas · **Riesgo:** Medio
 **Estado actual:** ❌ No empezado
 
-EE tiene LQ/SQ (128-bit load/store). `emit_flush_pinned` pasaría de 10 SW a 3-4 SQ. `emit_reload_pinned` igual.
-
-**Requisito:** `cpu.regs[]` 16-byte aligned. Pinned regs: 2-7,28-31 (casi consecutivos excepto gap 8-27). SQ para regs[0..3], regs[4..7], regs[28..31].
+Current LW/SW emits ~25 words per instruction (ISC + align + range + scratchpad + slow).
+With SMRV (base reg known RAM), skip ISC/range/scratchpad: 4 words instead of 25.
 
 ---
 
-### 5. Dynamic Register Allocation (full)
-**Impacto:** Crítico (15-25%) · **Esfuerzo:** 2-4 semanas · **Riesgo:** Alto  
-**Estado actual:** 🔄 Parcial (3 dynamic slots T0/T1/T2)
+### 4. DIV Simplification
+**Impacto:** Medio (DIV: 15x → ~5x) · **Esfuerzo:** 1 hora · **Riesgo:** Bajo
+**Estado actual:** ❌ No empezado
 
-Ya tenemos 3 write-through dynamic slots que cubren los regs más usados por bloque. Pero aún quedan ~16 PSX regs que siempre van por LW/SW a `cpu.regs[]`.
+Simplify div-by-zero and overflow checks. DIVU only needs BEQ+NOP+DIV+MFHI+MFLO.
 
-Full regalloc al estilo pcsx_rearmed: `regmap[HOST_REGS]` per-instruction con dirty bitmask, LRU eviction, mapping consistente en branch targets.
+---
 
-**Requiere reescribir** todos los emitters para pedir registros dinámicos en vez de asumir T0/T1/T2.
+### 5. SQ/LQ Prologue/Epilogue
+**Impacto:** Bajo-Medio (32 → ~20 words per block) · **Esfuerzo:** 2-4 horas · **Riesgo:** Bajo
+**Estado actual:** ❌ No empezado
+
+Use PS2 128-bit SQ/LQ to batch register saves/restores (4 SW → 1 SQ).
+
+---
+
+### 6. FlushCache Batching
+**Impacto:** Bajo (1-3%) · **Esfuerzo:** 30 min · **Riesgo:** Muy Bajo
+**Estado actual:** ❌ No empezado
+
+Batch FlushCache calls across multiple compile_block invocations.
 
 ---
 
@@ -98,15 +97,16 @@ Full regalloc al estilo pcsx_rearmed: `regmap[HOST_REGS]` per-instruction con di
 ## Prioridad recomendada
 
 ```
-1. SMRV / inline cache          (2-4h — alto impacto, reduce hot path LW/SW)
-2. FlushCache batching          (30 min — cambio trivial)
-3. LQ/SQ bulk flush/reload      (1 día — medio impacto)
-4. Dynamic regalloc full        (2-4 semanas — máximo impacto)
+1. Hoist CU2 check to prologue   (1-2h — COP2: 24x → 8x)
+2. Inline MTC2/MFC2 transfers    (1-2h — COP2 xfer: 24x → 3x)
+3. SMRV memory fast-path          (2-4h — LW/SW: 23-27x → 8-10x)
+4. DIV simplification              (1h — DIV: 15x → 5x)
+5. SQ/LQ prologue/epilogue        (2-4h — prologue: 32 → 20 words)
+6. FlushCache batching             (30 min — runtime only)
 ```
 
-~~Dirty bitmask flush~~ — impacto <0.2% tras optimizaciones de trampoline.
-
-**Nota:** El "multipass refactor" (Scan+Emit) listado antes como prerequisito YA ESTÁ HECHO — `block_scan()` es el pass 1 (backward liveness, DCE, reg demand, dirty mask) y el compile loop es el pass 2 (emit).
+**Expansion ratio data:** see `docs/expansion_optimization_proposals.md` and
+`tests/jit/test_expansion.c` (playground compile-only measurement).
 
 ---
 

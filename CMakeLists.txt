@@ -223,6 +223,7 @@ set(PLAYGROUND_SOURCES
     tests/jit/test_block.c
     tests/jit/test_dirty.c
     tests/jit/test_gte.c
+    tests/jit/test_expansion.c
     src/cpu.c
     src/memory.c
     src/scheduler.c

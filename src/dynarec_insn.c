@@ -1212,14 +1212,99 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit_call_c_lite((uint32_t)GTE_Inline_DPCT);
                 break;
             case 0x2D: /* AVSZ3 */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_AVSZ3);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline AVSZ3 (fast path) ----
+                     * MAC0 = (int16_t)ZSF3 × (SZ1 + SZ2 + SZ3)
+                     * OTZ  = saturate_sz(MAC0 >> 12)   [clamp 0..0xFFFF]
+                     * FLAG = 0
+                     *
+                     * Scratch: T8(sum), T9(temp), AT(temp), V0(ZSF3/MAC0), V1(OTZ)
+                     */
+
+                    /* Load SZ1,SZ2,SZ3 + ZSF3 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(17), REG_S0);     /* T8 = SZ1 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(18), REG_S0);     /* T9 = SZ2 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(19), REG_S0);     /* AT = SZ3 */
+                    EMIT_LH(REG_V0, CPU_CP2_CTRL(29), REG_S0);     /* V0 = (int16)ZSF3 */
+
+                    /* Sum */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_T9);             /* T8 = SZ1+SZ2 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_AT);             /* T8 = SZ1+SZ2+SZ3 */
+
+                    /* Multiply + store MAC0 */
+                    EMIT_MULT(REG_V0, REG_T8);                     /* HI:LO = ZSF3 × sum */
+                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* store MAC0 */
+
+                    /* OTZ = saturate(MAC0>>12, 0, 0xFFFF) */
+                    EMIT_SRA(REG_V1, REG_V0, 12);                  /* V1 = MAC0>>12 (arith) */
+                    /* Branchless clamp [0..0xFFFF] using MOVN */
+                    emit(MK_R(0, REG_V1, REG_ZERO, REG_T8, 0, 0x2A)); /* SLT T8,V1,$0 */
+                    EMIT_MOVN(REG_V1, REG_ZERO, REG_T8);           /* neg→0 */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);            /* T9 = 0xFFFF */
+                    emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A)); /* SLT T8,T9,V1 */
+                    EMIT_MOVN(REG_V1, REG_T9, REG_T8);             /* >0xFFFF→0xFFFF */
+
+                    /* Store OTZ + FLAG=0 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);      /* OTZ */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    /* Total: 19 EE words */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_AVSZ3);
+                }
                 break;
             case 0x2E: /* AVSZ4 */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_AVSZ4);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline AVSZ4 (fast path) ----
+                     * MAC0 = (int16_t)ZSF4 × (SZ0 + SZ1 + SZ2 + SZ3)
+                     * OTZ  = saturate_sz(MAC0 >> 12)
+                     * FLAG = 0
+                     *
+                     * Scratch: T8(sum), T9(temp), AT(temp), V0(ZSF4/MAC0), V1(OTZ)
+                     */
+
+                    /* Load SZ0-3 + ZSF4 */
+                    EMIT_LW(REG_T8, CPU_CP2_DATA(16), REG_S0);     /* T8 = SZ0 */
+                    EMIT_LW(REG_T9, CPU_CP2_DATA(17), REG_S0);     /* T9 = SZ1 */
+                    EMIT_LW(REG_AT, CPU_CP2_DATA(18), REG_S0);     /* AT = SZ2 */
+                    EMIT_LW(REG_V1, CPU_CP2_DATA(19), REG_S0);     /* V1 = SZ3 */
+                    EMIT_LH(REG_V0, CPU_CP2_CTRL(30), REG_S0);     /* V0 = (int16)ZSF4 */
+
+                    /* Sum */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_T9);             /* T8 = SZ0+SZ1 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_AT);             /* T8 += SZ2 */
+                    EMIT_ADDU(REG_T8, REG_T8, REG_V1);             /* T8 += SZ3 */
+
+                    /* Multiply + store MAC0 */
+                    EMIT_MULT(REG_V0, REG_T8);                     /* HI:LO = ZSF4 × sum */
+                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* store MAC0 */
+
+                    /* OTZ = saturate(MAC0>>12, 0, 0xFFFF) */
+                    EMIT_SRA(REG_V1, REG_V0, 12);                  /* V1 = MAC0>>12 */
+                    emit(MK_R(0, REG_V1, REG_ZERO, REG_T8, 0, 0x2A)); /* SLT T8,V1,$0 */
+                    EMIT_MOVN(REG_V1, REG_ZERO, REG_T8);           /* neg→0 */
+                    EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);            /* T9 = 0xFFFF */
+                    emit(MK_R(0, REG_T9, REG_V1, REG_T8, 0, 0x2A)); /* SLT T8,T9,V1 */
+                    EMIT_MOVN(REG_V1, REG_T9, REG_T8);             /* >0xFFFF→0xFFFF */
+
+                    /* Store OTZ + FLAG=0 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(7), REG_S0);      /* OTZ */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    /* Total: 21 EE words */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_AVSZ4);
+                }
                 break;
             case 0x30: /* RTPT */
                 EMIT_MOVE(REG_A0, REG_S0);

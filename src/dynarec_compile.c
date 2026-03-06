@@ -607,6 +607,12 @@ void emit_block_prologue(void)
     EMIT_SW(REG_S6, 56, REG_SP);
     EMIT_SW(REG_S7, 60, REG_SP);
     EMIT_SW(REG_FP, 68, REG_SP);
+    /* FP = &jit_ht[0] for fast hash-table dispatch (P5) */
+    {
+        uint32_t ht = (uint32_t)&jit_ht[0];
+        EMIT_LUI(REG_FP, ht >> 16);
+        EMIT_ORI(REG_FP, REG_FP, ht & 0xFFFF);
+    }
     EMIT_MOVE(REG_S0, REG_A0); /* S0 = &cpu           */
     /* S1 = TLB-mapped VA base (0x20000000) if TLB active, else psx_ram */
     if (psx_tlb_base)

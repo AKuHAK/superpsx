@@ -104,22 +104,22 @@ static void test_expansion_alu(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_ADDU(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
-    check_expansion("ADDU", ee, 40, &pg_ctx);
+    check_expansion("ADDU", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_ADDIU(R_T1, R_T2, 42)}, 1, REPEAT, NULL);
-    check_expansion("ADDIU", ee, 40, &pg_ctx);
+    check_expansion("ADDIU", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_AND(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
-    check_expansion("AND", ee, 40, &pg_ctx);
+    check_expansion("AND", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SLL(R_T1, R_T2, 5)}, 1, REPEAT, NULL);
-    check_expansion("SLL", ee, 40, &pg_ctx);
+    check_expansion("SLL", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_LUI(R_T1, 0x8000)}, 1, REPEAT, NULL);
-    check_expansion("LUI", ee, 40, &pg_ctx);
+    check_expansion("LUI", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SLT(R_T1, R_T2, R_T3)}, 1, REPEAT, NULL);
-    check_expansion("SLT", ee, 40, &pg_ctx);
+    check_expansion("SLT", ee, 42, &pg_ctx);
 
     END_TEST();
 }
@@ -134,22 +134,22 @@ static void test_expansion_muldiv(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_MULT(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("MULT", ee, 150, &pg_ctx);
+    check_expansion("MULT", ee, 152, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MULTU(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("MULTU", ee, 150, &pg_ctx);
+    check_expansion("MULTU", ee, 152, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIV(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIV", ee, 200, &pg_ctx);
+    check_expansion("DIV", ee, 202, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIVU(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIVU", ee, 170, &pg_ctx);
+    check_expansion("DIVU", ee, 172, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFHI(R_T1)}, 1, REPEAT, NULL);
-    check_expansion("MFHI", ee, 40, &pg_ctx);
+    check_expansion("MFHI", ee, 42, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFLO(R_T1)}, 1, REPEAT, NULL);
-    check_expansion("MFLO", ee, 40, &pg_ctx);
+    check_expansion("MFLO", ee, 42, &pg_ctx);
 
     END_TEST();
 }
@@ -164,16 +164,16 @@ static void test_expansion_loadstore(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_LW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("LW", ee, 425, &pg_ctx);
+    check_expansion("LW", ee, 427, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SW(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("SW", ee, 485, &pg_ctx);
+    check_expansion("SW", ee, 487, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_LB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("LB", ee, 135, &pg_ctx);
+    check_expansion("LB", ee, 137, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SB(R_T1, 0, R_SP)}, 1, REPEAT, NULL);
-    check_expansion("SB", ee, 355, &pg_ctx);
+    check_expansion("SB", ee, 357, &pg_ctx);
 
     END_TEST();
 }
@@ -188,23 +188,23 @@ static void test_expansion_gte(void)
     int ee;
 
     ee = compile_and_measure(&(uint32_t){PSX_MTC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("MTC2", ee, 90, &pg_ctx);
+    check_expansion("MTC2", ee, 92, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("MFC2", ee, 90, &pg_ctx);
+    check_expansion("MFC2", ee, 92, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 RTPS", ee, 230, &pg_ctx);
+    check_expansion("COP2 RTPS", ee, 232, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 NCLIP", ee, 200, &pg_ctx);
+    check_expansion("COP2 NCLIP", ee, 202, &pg_ctx);
 
     /* LWC2/SWC2 — coprocessor memory transfers (inline since P3 extension) */
     ee = compile_and_measure(&(uint32_t){PSX_LWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("LWC2", ee, 435, &pg_ctx);
+    check_expansion("LWC2", ee, 437, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_SWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("SWC2", ee, 660, &pg_ctx);
+    check_expansion("SWC2", ee, 662, &pg_ctx);
 
     END_TEST();
 }
@@ -227,7 +227,7 @@ static void test_expansion_mixed(void)
             PSX_OR(R_T6, R_T5, R_T1),
         };
         ee = compile_and_measure(alu_chain, 4, 4, NULL);
-        check_expansion("ALU chain", ee, 50, &pg_ctx);
+        check_expansion("ALU chain", ee, 52, &pg_ctx);
     }
 
     /* GTE transform (Crash-like) */
@@ -240,7 +240,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T3, 0, R_SP),
         };
         ee = compile_and_measure(gte_xform, 5, 3, expansion_enable_cop2);
-        check_expansion("GTE xform", ee, 210, &pg_ctx);
+        check_expansion("GTE xform", ee, 212, &pg_ctx);
     }
 
     /* SW burst */
@@ -252,7 +252,7 @@ static void test_expansion_mixed(void)
             PSX_SW(R_T4, 12, R_SP),
         };
         ee = compile_and_measure(sw_burst, 4, 4, NULL);
-        check_expansion("SW burst", ee, 490, &pg_ctx);
+        check_expansion("SW burst", ee, 492, &pg_ctx);
     }
 
     END_TEST();

@@ -118,12 +118,12 @@ typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int3
 #define REG_A3 7
 #define REG_V0 2
 #define REG_V1 3
-#define REG_FP 30 /* $s8/$fp — free (not pinned, reserved for future use) */
+#define REG_FP 30 /* $s8/$fp — pinned: jit_ht base addr for fast dispatch */
 #define REG_RA 31
 #define REG_SP 29
 #define REG_ZERO 0
 
-#define DYNAREC_PROLOGUE_WORDS 20
+#define DYNAREC_PROLOGUE_WORDS 22
 
 /* ================================================================
  *  MIPS instruction builders

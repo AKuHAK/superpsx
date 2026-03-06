@@ -349,13 +349,9 @@ void Init_Dynarec(void)
         /* 3. Scale to byte offset: t9 <<= 4 (sizeof(JitHTEntry) = 16, 2-way) */
         *p++ = MK_R(0, 0, REG_T9, REG_T9, 4, 0x00); /* sll  t9, t9, 4 */
 
-        /* 4. Load hash table base: at = &jit_ht */
-        uint32_t ht_addr = (uint32_t)&jit_ht[0];
-        *p++ = MK_I(0x0F, 0, REG_AT, (ht_addr >> 16) & 0xFFFF); /* lui at, hi */
-        *p++ = MK_I(0x0D, REG_AT, REG_AT, ht_addr & 0xFFFF);    /* ori at, at, lo */
-
-        /* 5. Index into table: t9 = &jit_ht[hash] */
-        *p++ = MK_R(0, REG_T9, REG_AT, REG_T9, 0, 0x21); /* addu t9, t9, at */
+        /* 4-5. Index into table: t9 = &jit_ht[hash]
+         *       FP already holds &jit_ht (P5: loaded in prologue) */
+        *p++ = MK_R(0, REG_T9, REG_FP, REG_T9, 0, 0x21); /* addu t9, t9, fp */
 
         /* 6. Check slot 0: at = psx_pc[0], compare with t8 */
         *p++ = MK_I(0x23, REG_T9, REG_AT, 0);  /* lw at, 0(t9) = psx_pc[0] */

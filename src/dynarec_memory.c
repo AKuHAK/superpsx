@@ -599,12 +599,23 @@ void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_s
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        /* Alignment check — use delay slot for phys mask.
-         * BNE reads T9 before the delay slot AND overwrites it. */
-        emit(MK_I(0x0C, REG_T8, REG_T9, size - 1)); /* andi  t9, t8, size-1 */
-        align_branch = code_ptr;
-        emit(MK_I(0x05, REG_T9, REG_ZERO, 0));          /* bne   t9, zero, @cold */
-        emit(MK_R(0, REG_T8, REG_S3, REG_T9, 0, 0x24)); /* [delay] and t9, t8, s3 (phys) */
+        /* P6: skip alignment check when base register is known word-aligned
+         * and offset preserves alignment (offset % size == 0).
+         * Word-aligned (& 3 == 0) implies half-aligned (& 1 == 0). */
+        if (align_is_known(rs_psx) && (offset % size == 0))
+        {
+            /* Alignment guaranteed — emit only the phys mask */
+            emit(MK_R(0, REG_T8, REG_S3, REG_T9, 0, 0x24)); /* and t9, t8, s3 (phys) */
+        }
+        else
+        {
+            /* Alignment check — use delay slot for phys mask.
+             * BNE reads T9 before the delay slot AND overwrites it. */
+            emit(MK_I(0x0C, REG_T8, REG_T9, size - 1)); /* andi  t9, t8, size-1 */
+            align_branch = code_ptr;
+            emit(MK_I(0x05, REG_T9, REG_ZERO, 0));          /* bne   t9, zero, @cold */
+            emit(MK_R(0, REG_T8, REG_S3, REG_T9, 0, 0x24)); /* [delay] and t9, t8, s3 (phys) */
+        }
     }
     else
     {
@@ -907,10 +918,19 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
     uint32_t *align_branch = NULL;
     if (size > 1)
     {
-        emit(MK_I(0x0C, REG_T8, REG_AT, size - 1)); /* andi  at, t8, size-1 */
-        align_branch = code_ptr;
-        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne   at, zero, @cold */
-        emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 (phys) */
+        /* P6: skip alignment check when base register is known word-aligned
+         * and offset preserves alignment (offset % size == 0). */
+        if (align_is_known(rs_psx) && (offset % size == 0))
+        {
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and at, t8, s3 (phys) */
+        }
+        else
+        {
+            emit(MK_I(0x0C, REG_T8, REG_AT, size - 1)); /* andi  at, t8, size-1 */
+            align_branch = code_ptr;
+            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne   at, zero, @cold */
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 (phys) */
+        }
     }
     else
     {

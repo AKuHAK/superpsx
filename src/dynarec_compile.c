@@ -883,9 +883,11 @@ uint32_t *compile_block(uint32_t psx_pc)
             emit_load_imm32(REG_A1, 2);          /* a1 = cop_num=2     */
             uint8_t saved_dirty = dyn_dirty_mask;
             uint32_t saved_smrv = smrv_known_ram;
+            uint32_t saved_align = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
             smrv_known_ram = saved_smrv;
+            align_known_mask = saved_align;
         }
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();

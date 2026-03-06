@@ -291,6 +291,19 @@ static inline void smrv_set_ram(int r)
 }
 static inline void smrv_clear(int r) { smrv_known_ram &= ~(1u << r); }
 
+/* Alignment tracking: bit r=1 → PSX reg r is known word-aligned (4-byte).
+ * Word-aligned implies half-aligned, so LH/LHU/SH checks can also be elided.
+ * $gp/$sp/$fp/$ra are always word-aligned by PSX ABI. */
+#define ALIGN_PINNED_MASK ((1u << 28) | (1u << 29) | (1u << 30) | (1u << 31))
+extern uint32_t align_known_mask;
+static inline int align_is_known(int r) { return (align_known_mask >> r) & 1; }
+static inline void align_set(int r)
+{
+    if (r)
+        align_known_mask |= (1u << r);
+}
+static inline void align_clear(int r) { align_known_mask &= ~(1u << r); }
+
 /* ================================================================
  *  Shared state — stats / perf
  * ================================================================ */

@@ -35,6 +35,12 @@ uint32_t dirty_const_mask;
  * via LUI/ADDIU/ORI to a RAM address, cleared on unknown writes. */
 uint32_t smrv_known_ram;
 
+/* Alignment tracking — compile-time bitmask: bit r=1 means PSX reg r
+ * is known to be word-aligned (addr & 3 == 0).  Used to skip the
+ * 2-instruction alignment check (ANDI+BNE) in LW/SW/LH/SH hot paths.
+ * $gp/$sp/$fp/$ra (regs 28-31) are always marked (PSX ABI guarantees). */
+uint32_t align_known_mask;
+
 /* Scratch register cache: tracks which PSX GPR value is in T8/T9.
  * -1 means the register holds no cached PSX GPR value. */
 int t8_cached_psx_reg = -1;
@@ -580,6 +586,7 @@ void emit_call_c(uint32_t func_addr)
     dyn_reload_slots();
     reg_cache_invalidate();
     smrv_known_ram = (1u << 29);
+    align_known_mask = ALIGN_PINNED_MASK;
 }
 
 /* Emit a JAL to a C helper that does NOT modify cpu.regs[].
@@ -691,6 +698,11 @@ void mark_vreg_const_lazy(int r, uint32_t val)
         smrv_known_ram |= (1u << r);
     else
         smrv_known_ram &= ~(1u << r);
+    /* Alignment: auto-set if this constant is word-aligned */
+    if ((val & 3) == 0)
+        align_known_mask |= (1u << r);
+    else
+        align_known_mask &= ~(1u << r);
 }
 
 void mark_vreg_var(int r)
@@ -700,6 +712,9 @@ void mark_vreg_var(int r)
     /* SMRV: clear by default; callers that preserve RAM-ness
      * (e.g., ADDIU from known-RAM base) re-set it after this call. */
     smrv_known_ram &= ~(1u << r);
+    /* Alignment: clear by default; callers that preserve alignment
+     * (e.g., ADDIU with aligned offset) re-set it after this call. */
+    align_known_mask &= ~(1u << r);
     /* If the register held a lazy (dirty) constant that was never
      * materialized into the native pinned register or cpu.regs[],
      * we must materialize it NOW before losing the value.  This
@@ -754,7 +769,8 @@ void reset_vregs(void)
 {
     memset(vregs, 0, sizeof(vregs));
     dirty_const_mask = 0;
-    smrv_known_ram = (1u << 29); /* $sp always RAM */
+    smrv_known_ram = (1u << 29);          /* $sp always RAM */
+    align_known_mask = ALIGN_PINNED_MASK; /* $gp/$sp/$fp/$ra always word-aligned */
     reg_cache_invalidate();
     dyn_reset_slots();
     /* $0 is special, but memset already handles it by setting is_const=0.

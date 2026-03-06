@@ -384,6 +384,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
                 uint8_t saved_dyn_dirty = dyn_dirty_mask;
+                uint32_t saved_smrv_ov = smrv_known_ram;
+                uint32_t saved_align_ov = align_known_mask;
                 int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -394,6 +396,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
                 dyn_dirty_mask = saved_dyn_dirty;
+                smrv_known_ram = saved_smrv_ov;
+                align_known_mask = saved_align_ov;
                 t8_cached_psx_reg = saved_t8;
                 t9_cached_psx_reg = saved_t9;
             }
@@ -417,6 +421,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             /* SMRV: ADDU rd, rs, $0 (MOVE) or ADDU rd, $0, rt propagates RAM-ness */
             int src_ram = (rt == 0 && smrv_is_known_ram(rs)) ||
                           (rs == 0 && smrv_is_known_ram(rt));
+            /* Alignment: MOVE propagates alignment */
+            int src_aligned = (rt == 0 && align_is_known(rs)) ||
+                              (rs == 0 && align_is_known(rt));
             mark_vreg_var(rd);
             int s1 = emit_use_reg(rs, REG_T8);
             int s2 = emit_use_reg(rt, REG_T9);
@@ -425,6 +432,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_sync_reg(rd, d);
             if (src_ram)
                 smrv_set_ram(rd);
+            if (src_aligned)
+                align_set(rd);
             break;
         }
         case 0x22: /* SUB — inline overflow detection */
@@ -480,6 +489,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 RegStatus saved_vregs[32];
                 uint32_t saved_dirty = dirty_const_mask;
                 uint8_t saved_dyn_dirty = dyn_dirty_mask;
+                uint32_t saved_smrv_ov = smrv_known_ram;
+                uint32_t saved_align_ov = align_known_mask;
                 int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
                 memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -490,6 +501,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 memcpy(vregs, saved_vregs, sizeof(vregs));
                 dirty_const_mask = saved_dirty;
                 dyn_dirty_mask = saved_dyn_dirty;
+                smrv_known_ram = saved_smrv_ov;
+                align_known_mask = saved_align_ov;
                 t8_cached_psx_reg = saved_t8;
                 t9_cached_psx_reg = saved_t9;
             }
@@ -637,6 +650,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         int rs_ram = smrv_is_known_ram(rs);
+        int rs_aligned = align_is_known(rs);
         mark_vreg_var(rt);
         int s1 = emit_use_reg(rs, REG_T8);
 
@@ -676,6 +690,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             RegStatus saved_vregs[32];
             uint32_t saved_dirty = dirty_const_mask;
             uint8_t saved_dyn_dirty = dyn_dirty_mask;
+            uint32_t saved_smrv_ov = smrv_known_ram;
+            uint32_t saved_align_ov = align_known_mask;
             int saved_t8 = t8_cached_psx_reg, saved_t9 = t9_cached_psx_reg;
             memcpy(saved_vregs, vregs, sizeof(vregs));
 
@@ -686,6 +702,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             memcpy(vregs, saved_vregs, sizeof(vregs));
             dirty_const_mask = saved_dirty;
             dyn_dirty_mask = saved_dyn_dirty;
+            smrv_known_ram = saved_smrv_ov;
+            align_known_mask = saved_align_ov;
             t8_cached_psx_reg = saved_t8;
             t9_cached_psx_reg = saved_t9;
         }
@@ -698,6 +716,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* SMRV: ADDI from RAM base stays in RAM (if no overflow) */
         if (rs_ram)
             smrv_set_ram(rt);
+        /* Alignment: ADDI preserves alignment when offset is word-aligned */
+        if (rs_aligned && (imm & 3) == 0)
+            align_set(rt);
         break;
     }
     case 0x09: /* ADDIU */
@@ -708,6 +729,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         int rs_ram = smrv_is_known_ram(rs);
+        int rs_aligned = align_is_known(rs);
         mark_vreg_var(rt);
         int s = emit_use_reg(rs, REG_T8);
         int d = emit_dst_reg(rt, REG_T8);
@@ -716,6 +738,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* SMRV: ADDIU from RAM base with small offset stays in RAM */
         if (rs_ram)
             smrv_set_ram(rt);
+        /* Alignment: ADDIU preserves alignment when offset is word-aligned */
+        if (rs_aligned && (imm & 3) == 0)
+            align_set(rt);
         break;
     }
     case 0x0A: /* SLTI */
@@ -768,6 +793,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             break;
         }
         int rs_ram = smrv_is_known_ram(rs);
+        int rs_aligned = align_is_known(rs);
         mark_vreg_var(rt);
         int s = emit_use_reg(rs, REG_T8);
         int d = emit_dst_reg(rt, REG_T8);
@@ -776,6 +802,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* SMRV: ORI from RAM base (e.g., LUI+ORI pattern) stays in RAM */
         if (rs_ram)
             smrv_set_ram(rt);
+        /* Alignment: ORI preserves alignment when low bits don't break it */
+        if (rs_aligned && (uimm & 3) == 0)
+            align_set(rt);
         break;
     }
     case 0x0E: /* XORI */
@@ -851,8 +880,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
         break;
@@ -875,8 +906,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_imm32(REG_A1, 2);
             {
                 uint8_t saved_dirty = dyn_dirty_mask;
+                uint32_t saved_align_cu = align_known_mask;
                 emit_call_c((uint32_t)Helper_CU_Exception);
                 dyn_dirty_mask = saved_dirty;
+                align_known_mask = saved_align_cu;
             }
             *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
         }
@@ -1209,8 +1242,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A1, 3);
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
         break;
@@ -1288,8 +1323,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A1, 0);
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
         break;
@@ -1312,8 +1349,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_imm32(REG_A1, 2);
             {
                 uint8_t saved_dirty = dyn_dirty_mask;
+                uint32_t saved_align_cu = align_known_mask;
                 emit_call_c((uint32_t)Helper_CU_Exception);
                 dyn_dirty_mask = saved_dirty;
+                align_known_mask = saved_align_cu;
             }
             *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
         }
@@ -1388,8 +1427,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A1, 3);
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
         break;
@@ -1410,8 +1451,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A1, 0);
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
         break;
@@ -1434,8 +1477,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_load_imm32(REG_A1, 2);
             {
                 uint8_t saved_dirty = dyn_dirty_mask;
+                uint32_t saved_align_cu = align_known_mask;
                 emit_call_c((uint32_t)Helper_CU_Exception);
                 dyn_dirty_mask = saved_dirty;
+                align_known_mask = saved_align_cu;
             }
             *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
         }
@@ -1491,11 +1536,20 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_NOP();
         }
 
-        /* Alignment check (word-aligned required) */
-        emit(MK_I(0x0C, REG_T8, REG_AT, 3)); /* andi at, t8, 3 */
-        uint32_t *align_swc2 = code_ptr;
-        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at, zero, @cold */
-        emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 */
+        /* Alignment check (word-aligned required) — P6: elide if base known aligned */
+        uint32_t *align_swc2 = NULL;
+        if (align_is_known(rs) && (imm % 4 == 0))
+        {
+            /* Alignment guaranteed — emit only the phys mask */
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and at, t8, s3 */
+        }
+        else
+        {
+            emit(MK_I(0x0C, REG_T8, REG_AT, 3)); /* andi at, t8, 3 */
+            align_swc2 = code_ptr;
+            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at, zero, @cold */
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at, t8, s3 */
+        }
 
         /* Range check: skip if SMRV proves base is RAM */
         uint32_t *range_swc2 = NULL;
@@ -1515,7 +1569,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             uint32_t *branches[4];
             int nb = 0;
             branches[nb++] = isc_swc2;
-            branches[nb++] = align_swc2;
+            if (align_swc2)
+                branches[nb++] = align_swc2;
             if (range_swc2)
                 branches[nb++] = range_swc2;
             cold_slow_push(branches, nb, code_ptr,
@@ -1541,8 +1596,10 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         emit_load_imm32(REG_A1, 3);
         {
             uint8_t saved_dirty = dyn_dirty_mask;
+            uint32_t saved_align_cu = align_known_mask;
             emit_call_c((uint32_t)Helper_CU_Exception);
             dyn_dirty_mask = saved_dirty;
+            align_known_mask = saved_align_cu;
         }
         *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
         break;

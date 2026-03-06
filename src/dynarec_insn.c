@@ -1191,11 +1191,65 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit_call_c_lite((uint32_t)GTE_Inline_NCT);
                 break;
             case 0x28: /* SQR */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_load_imm32(REG_A1, gte_sf);
-                emit_load_imm32(REG_A2, gte_lm);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_SQR);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline SQR (fast path) ----
+                     * MAC_n = IR_n² [>> 12 if sf=1]
+                     * IR_n  = clamp(MAC_n, 0..0x7FFF)  [squares always ≥ 0]
+                     * FLAG  = 0
+                     *
+                     * Scratch: T8(ir1), T9(ir2), AT(ir3), V0(sq1), V1(sq2), A0(sq3)
+                     */
+
+                    /* Load IR1,IR2,IR3 as sign-extended int16 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(9),  REG_S0);     /* T8 = (int16)IR1 */
+                    EMIT_LH(REG_T9, CPU_CP2_DATA(10), REG_S0);     /* T9 = (int16)IR2 */
+                    EMIT_LH(REG_AT, CPU_CP2_DATA(11), REG_S0);     /* AT = (int16)IR3 */
+
+                    /* Square: MULT + MFLO */
+                    EMIT_MULT(REG_T8, REG_T8);                     /* LO = IR1² */
+                    EMIT_MFLO(REG_V0);                              /* V0 = IR1² */
+                    EMIT_MULT(REG_T9, REG_T9);                     /* LO = IR2² */
+                    EMIT_MFLO(REG_V1);                              /* V1 = IR2² */
+                    EMIT_MULT(REG_AT, REG_AT);                     /* LO = IR3² */
+                    EMIT_MFLO(REG_A0);                              /* A0 = IR3² */
+
+                    /* sf=1: shift right by 12 */
+                    if (gte_sf) {
+                        EMIT_SRA(REG_V0, REG_V0, 12);              /* V0 >>= 12 */
+                        EMIT_SRA(REG_V1, REG_V1, 12);              /* V1 >>= 12 */
+                        EMIT_SRA(REG_A0, REG_A0, 12);              /* A0 >>= 12 */
+                    }
+
+                    /* Store MAC1-3 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);     /* MAC1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);     /* MAC2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);     /* MAC3 */
+
+                    /* Saturate IR: clamp to [0..0x7FFF] (squares always ≥ 0) */
+                    EMIT_ORI(REG_T8, REG_ZERO, 0x7FFF);            /* T8 = 0x7FFF */
+                    emit(MK_R(0, REG_T8, REG_V0, REG_T9, 0, 0x2A)); /* SLT T9,T8,V0 */
+                    EMIT_MOVN(REG_V0, REG_T8, REG_T9);             /* V0>0x7FFF→0x7FFF */
+                    emit(MK_R(0, REG_T8, REG_V1, REG_T9, 0, 0x2A)); /* SLT T9,T8,V1 */
+                    EMIT_MOVN(REG_V1, REG_T8, REG_T9);             /* V1>0x7FFF→0x7FFF */
+                    emit(MK_R(0, REG_T8, REG_A0, REG_T9, 0, 0x2A)); /* SLT T9,T8,A0 */
+                    EMIT_MOVN(REG_A0, REG_T8, REG_T9);             /* A0>0x7FFF→0x7FFF */
+
+                    /* Store IR1-3 + FLAG=0 */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(9),  REG_S0);     /* IR1 */
+                    EMIT_SW(REG_V1, CPU_CP2_DATA(10), REG_S0);     /* IR2 */
+                    EMIT_SW(REG_A0, CPU_CP2_DATA(11), REG_S0);     /* IR3 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                    /* Total: sf=0: 23 words, sf=1: 26 words */
+                }
+                else
+                {
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_load_imm32(REG_A1, gte_sf);
+                    emit_load_imm32(REG_A2, gte_lm);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_SQR);
+                }
                 break;
             case 0x29: /* DCPL */
                 EMIT_MOVE(REG_A0, REG_S0);

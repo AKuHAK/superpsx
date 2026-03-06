@@ -27,7 +27,7 @@
  * (required by the GTE test suite).
  * ================================================================ */
 int gte_flag_read_count = 0;
-int gte_use_vu0 = 0;  /* 0=exact C path, 1=VU0 fast path */
+int gte_use_vu0 = 0; /* 0=exact C path, 1=VU0 fast path */
 
 void GTE_VBlankUpdate(void)
 {
@@ -35,11 +35,11 @@ void GTE_VBlankUpdate(void)
 }
 
 #ifdef ENABLE_HOST_LOG
-#define DBG(...)                    \
-    do                              \
-    {                               \
+#define DBG(...)                      \
+    do                                \
+    {                                 \
         host_log_printf(__VA_ARGS__); \
-        host_log_flush();            \
+        host_log_flush();             \
     } while (0)
 #else
 #define DBG(...)
@@ -561,7 +561,8 @@ static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv)
 {
 #ifdef _EE
     /* VU0 fast path: skip 44-bit overflow tracking, use float multiply */
-    if (gte_use_vu0 && sf && mx != 3 && cv != 2) {
+    if (gte_use_vu0 && sf && mx != 3 && cv != 2)
+    {
         gte_mvmva_vu0(cpu, lm, mx, v, cv);
         return;
     }
@@ -1386,7 +1387,7 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
  *
  * Falls back to exact C path when sf=0 (rare, needs full dynamic range).
  * ================================================================ */
-#ifdef _EE  /* PS2 EE target only */
+#ifdef _EE /* PS2 EE target only */
 
 /* Aligned float buffers for VU0 register loads */
 static float vu0_rt_col1[4] __attribute__((aligned(16)));
@@ -1413,14 +1414,20 @@ static void vu0_refresh_rt_matrix(R3000CPU *cpu)
      * vmadday ACC, col2, vf_vertex.y   => ACC.xyz += col2.xyz * VY
      * vmaddz  res, col3, vf_vertex.z   => res.xyz = ACC.xyz + col3.xyz * VZ
      * vadd    res, res, trans           => res.xyz += {TRX, TRY, TRZ}         */
-    vu0_rt_col1[0] = (float)r11 * s;  vu0_rt_col1[1] = (float)r21 * s;
-    vu0_rt_col1[2] = (float)r31 * s;  vu0_rt_col1[3] = 0.0f;
+    vu0_rt_col1[0] = (float)r11 * s;
+    vu0_rt_col1[1] = (float)r21 * s;
+    vu0_rt_col1[2] = (float)r31 * s;
+    vu0_rt_col1[3] = 0.0f;
 
-    vu0_rt_col2[0] = (float)r12 * s;  vu0_rt_col2[1] = (float)r22 * s;
-    vu0_rt_col2[2] = (float)r32 * s;  vu0_rt_col2[3] = 0.0f;
+    vu0_rt_col2[0] = (float)r12 * s;
+    vu0_rt_col2[1] = (float)r22 * s;
+    vu0_rt_col2[2] = (float)r32 * s;
+    vu0_rt_col2[3] = 0.0f;
 
-    vu0_rt_col3[0] = (float)r13 * s;  vu0_rt_col3[1] = (float)r23 * s;
-    vu0_rt_col3[2] = (float)r33 * s;  vu0_rt_col3[3] = 0.0f;
+    vu0_rt_col3[0] = (float)r13 * s;
+    vu0_rt_col3[1] = (float)r23 * s;
+    vu0_rt_col3[2] = (float)r33 * s;
+    vu0_rt_col3[3] = 0.0f;
 
     /* Translation: NOT pre-scaled, added directly after multiply */
     vu0_rt_trans[0] = (float)(int32_t)C(c_TRX);
@@ -1469,8 +1476,7 @@ static void gte_rtps_core_vu0(R3000CPU *cpu, int v, int lm, int last)
         "sqc2    $vf6, 0(%1)\n\t"
         : /* no outputs */
         : "r"(vert), "r"(result)
-        : "memory"
-    );
+        : "memory");
 
     /* Float → int32 MAC values (C compiler emits trunc.w.s or cvt.w.s) */
     int32_t mac1 = (int32_t)result[0];
@@ -1534,8 +1540,7 @@ static void gte_cmd_rtps_vu0(R3000CPU *cpu, int lm)
         "lqc2 $vf3, 0(%2)\n\t"
         "lqc2 $vf4, 0(%3)\n\t"
         : /* no outputs */
-        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans)
-    );
+        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans));
 
     gte_rtps_core_vu0(cpu, 0, lm, 1);
 }
@@ -1551,8 +1556,7 @@ static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
         "lqc2 $vf3, 0(%2)\n\t"
         "lqc2 $vf4, 0(%3)\n\t"
         : /* no outputs */
-        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans)
-    );
+        : "r"(vu0_rt_col1), "r"(vu0_rt_col2), "r"(vu0_rt_col3), "r"(vu0_rt_trans));
 
     gte_rtps_core_vu0(cpu, 0, lm, 0);
     gte_rtps_core_vu0(cpu, 1, lm, 0);
@@ -1582,12 +1586,18 @@ static void vu0_refresh_lt_matrix(R3000CPU *cpu)
     int16_t l33 = lo16(C(c_L33));
 
     const float s = 1.0f / 4096.0f;
-    vu0_lt_col1[0] = (float)l11 * s;  vu0_lt_col1[1] = (float)l21 * s;
-    vu0_lt_col1[2] = (float)l31 * s;  vu0_lt_col1[3] = 0.0f;
-    vu0_lt_col2[0] = (float)l12 * s;  vu0_lt_col2[1] = (float)l22 * s;
-    vu0_lt_col2[2] = (float)l32 * s;  vu0_lt_col2[3] = 0.0f;
-    vu0_lt_col3[0] = (float)l13 * s;  vu0_lt_col3[1] = (float)l23 * s;
-    vu0_lt_col3[2] = (float)l33 * s;  vu0_lt_col3[3] = 0.0f;
+    vu0_lt_col1[0] = (float)l11 * s;
+    vu0_lt_col1[1] = (float)l21 * s;
+    vu0_lt_col1[2] = (float)l31 * s;
+    vu0_lt_col1[3] = 0.0f;
+    vu0_lt_col2[0] = (float)l12 * s;
+    vu0_lt_col2[1] = (float)l22 * s;
+    vu0_lt_col2[2] = (float)l32 * s;
+    vu0_lt_col2[3] = 0.0f;
+    vu0_lt_col3[0] = (float)l13 * s;
+    vu0_lt_col3[1] = (float)l23 * s;
+    vu0_lt_col3[2] = (float)l33 * s;
+    vu0_lt_col3[3] = 0.0f;
 
     for (int i = 0; i < 5; i++)
         vu0_lt_snapshot[i] = C(8 + i);
@@ -1616,12 +1626,18 @@ static void vu0_refresh_lc_matrix(R3000CPU *cpu)
     int16_t lb3 = lo16(C(c_LB3));
 
     const float s = 1.0f / 4096.0f;
-    vu0_lc_col1[0] = (float)lr1 * s;  vu0_lc_col1[1] = (float)lg1 * s;
-    vu0_lc_col1[2] = (float)lb1 * s;  vu0_lc_col1[3] = 0.0f;
-    vu0_lc_col2[0] = (float)lr2 * s;  vu0_lc_col2[1] = (float)lg2 * s;
-    vu0_lc_col2[2] = (float)lb2 * s;  vu0_lc_col2[3] = 0.0f;
-    vu0_lc_col3[0] = (float)lr3 * s;  vu0_lc_col3[1] = (float)lg3 * s;
-    vu0_lc_col3[2] = (float)lb3 * s;  vu0_lc_col3[3] = 0.0f;
+    vu0_lc_col1[0] = (float)lr1 * s;
+    vu0_lc_col1[1] = (float)lg1 * s;
+    vu0_lc_col1[2] = (float)lb1 * s;
+    vu0_lc_col1[3] = 0.0f;
+    vu0_lc_col2[0] = (float)lr2 * s;
+    vu0_lc_col2[1] = (float)lg2 * s;
+    vu0_lc_col2[2] = (float)lb2 * s;
+    vu0_lc_col2[3] = 0.0f;
+    vu0_lc_col3[0] = (float)lr3 * s;
+    vu0_lc_col3[1] = (float)lg3 * s;
+    vu0_lc_col3[2] = (float)lb3 * s;
+    vu0_lc_col3[3] = 0.0f;
 
     for (int i = 0; i < 5; i++)
         vu0_lc_snapshot[i] = C(16 + i);
@@ -1666,27 +1682,35 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
 {
     /* Select and refresh matrix columns */
     float *col1, *col2, *col3;
-    switch (mx) {
+    switch (mx)
+    {
     case 0: /* RT */
         if (vu0_rt_is_dirty(cpu))
             vu0_refresh_rt_matrix(cpu);
-        col1 = vu0_rt_col1; col2 = vu0_rt_col2; col3 = vu0_rt_col3;
+        col1 = vu0_rt_col1;
+        col2 = vu0_rt_col2;
+        col3 = vu0_rt_col3;
         break;
     case 1: /* Light */
         if (vu0_lt_is_dirty(cpu))
             vu0_refresh_lt_matrix(cpu);
-        col1 = vu0_lt_col1; col2 = vu0_lt_col2; col3 = vu0_lt_col3;
+        col1 = vu0_lt_col1;
+        col2 = vu0_lt_col2;
+        col3 = vu0_lt_col3;
         break;
     default: /* Color (mx=2) */
         if (vu0_lc_is_dirty(cpu))
             vu0_refresh_lc_matrix(cpu);
-        col1 = vu0_lc_col1; col2 = vu0_lc_col2; col3 = vu0_lc_col3;
+        col1 = vu0_lc_col1;
+        col2 = vu0_lc_col2;
+        col3 = vu0_lc_col3;
         break;
     }
 
     /* Select and refresh translation */
     float *trans;
-    switch (cv) {
+    switch (cv)
+    {
     case 0: /* TR — part of RT cache (ctrl[5-7]) */
         if (mx != 0 && vu0_rt_is_dirty(cpu))
             vu0_refresh_rt_matrix(cpu);
@@ -1729,8 +1753,7 @@ static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)
         "sqc2    $vf6, 0(%5)\n\t"
         : /* no outputs */
         : "r"(col1), "r"(col2), "r"(col3), "r"(trans), "r"(vert), "r"(result)
-        : "memory"
-    );
+        : "memory");
 
     int32_t mac1 = (int32_t)result[0];
     int32_t mac2 = (int32_t)result[1];
@@ -1758,9 +1781,11 @@ void GTE_Inline_RTPS(R3000CPU *cpu, int sf, int lm)
 {
     flag_reset();
 #ifdef _EE
-    if (gte_use_vu0 && sf) {
+    if (gte_use_vu0 && sf)
+    {
         gte_cmd_rtps_vu0(cpu, lm);
-    } else
+    }
+    else
 #endif
     {
         gte_cmd_rtps(cpu, sf, lm);
@@ -1915,9 +1940,11 @@ void GTE_Inline_RTPT(R3000CPU *cpu, int sf, int lm)
 {
     flag_reset();
 #ifdef _EE
-    if (gte_use_vu0 && sf) {
+    if (gte_use_vu0 && sf)
+    {
         gte_cmd_rtpt_vu0(cpu, lm);
-    } else
+    }
+    else
 #endif
     {
         gte_cmd_rtpt(cpu, sf, lm);

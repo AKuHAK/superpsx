@@ -133,6 +133,60 @@
 /* COP0 register numbers */
 #define PSX_COP0_SR_IDX  12
 
+/* ---- COP2 (GTE) instructions ---- */
+
+/* MTC2 rt, rd — Move To Coprocessor 2 (GTE data register write) */
+#define PSX_MTC2(rt,rd) ((0x12u << 26) | (0x04u << 21) | ((rt) << 16) | ((rd) << 11))
+
+/* MFC2 rt, rd — Move From Coprocessor 2 (GTE data register read) */
+#define PSX_MFC2(rt,rd) ((0x12u << 26) | (0x00u << 21) | ((rt) << 16) | ((rd) << 11))
+
+/* CTC2 rt, rd — Move To Coprocessor 2 Control (GTE control register write) */
+#define PSX_CTC2(rt,rd) ((0x12u << 26) | (0x06u << 21) | ((rt) << 16) | ((rd) << 11))
+
+/* CFC2 rt, rd — Move From Coprocessor 2 Control (GTE control register read) */
+#define PSX_CFC2(rt,rd) ((0x12u << 26) | (0x02u << 21) | ((rt) << 16) | ((rd) << 11))
+
+/* COP2 command word: opcode=0x12, bit25=1, func in lower 25 bits */
+#define PSX_COP2(func) ((0x12u << 26) | (1u << 25) | ((func) & 0x01FFFFFFu))
+
+/* Common GTE commands (encoding: sf=bit19, lm=bit10, cmd=lower 6 bits) */
+#define GTE_CMD_RTPS(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x01)
+#define GTE_CMD_NCLIP         PSX_COP2(0x06)
+#define GTE_CMD_AVSZ3         PSX_COP2(0x2D)
+#define GTE_CMD_RTPT(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x30)
+
+/* GTE data register indices */
+#define GTE_VXY0 0   /* V0 vector X,Y (packed: lo=X, hi=Y) */
+#define GTE_VZ0  1   /* V0 vector Z */
+#define GTE_SXY0 12  /* Screen X,Y pair 0 */
+#define GTE_SXY1 13  /* Screen X,Y pair 1 */
+#define GTE_SXY2 14  /* Screen X,Y pair 2 (most recent RTPS result) */
+#define GTE_SXYP 15  /* Screen X,Y pair (FIFO read; special) */
+#define GTE_SZ0  16  /* Screen Z 0 */
+#define GTE_SZ1  17
+#define GTE_SZ2  18
+#define GTE_SZ3  19
+#define GTE_OTZ  7   /* Average Z value */
+#define GTE_MAC1 25
+#define GTE_MAC2 26
+#define GTE_MAC3 27
+
+/* GTE control register indices */
+#define GTE_RT11RT12 0  /* Rotation matrix [0] */
+#define GTE_RT13RT21 1
+#define GTE_RT22RT23 2
+#define GTE_RT31RT32 3
+#define GTE_RT33     4
+#define GTE_TRX      5  /* Translation X */
+#define GTE_TRY      6
+#define GTE_TRZ      7
+#define GTE_OFX     24  /* Screen offset X (fixed 16.16) */
+#define GTE_OFY     25  /* Screen offset Y (fixed 16.16) */
+#define GTE_H       26  /* Projection plane distance */
+#define GTE_DQA     27
+#define GTE_DQB     28
+
 /* ================================================================
  *  Test Framework
  * ================================================================ */
@@ -153,6 +207,9 @@ extern uint8_t *psx_ram;
 /* Forward: compile + execute a block at given PC with given cycle budget.
  * Defined in playground_main.c. */
 void pg_run_jit(uint32_t pc, int32_t cycles);
+
+/* Set to 1 to hex-dump the first compiled block (debug) */
+extern int pg_dump_next_block;
 
 /* Full cache flush + page table reset (between tests) */
 void pg_reset_jit_cache(void);
@@ -333,6 +390,7 @@ void pg_run_memory_tests(void);   /* test_memory.c */
 void pg_run_branch_tests(void);   /* test_branch.c */
 void pg_run_block_tests(void);    /* test_block.c  */
 void pg_run_dirty_tests(void);    /* test_dirty.c  */
+void pg_run_gte_tests(void);      /* test_gte.c    */
 
 /* Master runner — calls all category runners above */
 void pg_run_all_tests(void);

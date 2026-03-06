@@ -848,7 +848,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         uint32_t *skip_patch_1 = code_ptr;
         emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
         EMIT_NOP();
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
         break;
     }
@@ -866,7 +868,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
 
         if (total_instructions < 20000000)
@@ -1124,7 +1128,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
         break;
     }
@@ -1199,7 +1205,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
         break;
     }
@@ -1217,7 +1225,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
 
         /* Memory read via LUT fast path (result in V0), then GTE write */
@@ -1246,7 +1256,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
         break;
     }
@@ -1264,7 +1276,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 0);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
         break;
     }
@@ -1282,7 +1296,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 2);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
 
         /* GTE read → V0 (data to store) */
@@ -1297,7 +1313,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         /* Cache Isolation check (cached or inline) */
         uint32_t *isc_swc2;
         if (block_isc_cached) {
-            EMIT_LW(REG_AT, 0, REG_SP);
+            EMIT_LW(REG_AT, 80, REG_SP);
             isc_swc2 = code_ptr;
             emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@slow */
             EMIT_NOP();
@@ -1408,7 +1424,9 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         EMIT_NOP();
         emit_load_imm32(REG_A0, psx_pc);
         emit_load_imm32(REG_A1, 3);
+        { uint8_t saved_dirty = dyn_dirty_mask;
         emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask = saved_dirty; }
         *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
         break;
     }

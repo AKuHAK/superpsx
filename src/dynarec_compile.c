@@ -15,7 +15,7 @@ uint32_t block_cycle_count = 0;
 uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
-int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+0 for current block */
+int block_isc_cached = 0;  /* 1 if ISC bit cached in SP+80 for current block */
 int block_has_isc_write = 0;  /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
@@ -62,7 +62,7 @@ static void emit_deferred_taken_all(void)
 
         /* Emit standard branch epilogue inline */
         flush_dirty_consts();
-        dyn_flush_all_slots(); /* D: deferred taken — flush-all (required: dirty-only causes glitches in Crash) */
+        dyn_flush_dirty_slots(); /* D: deferred taken — dirty-only */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
@@ -580,7 +580,7 @@ void block_scan(const uint32_t *code, int max_insns, BlockScanResult *out)
 /* ---- Block prologue: save callee-saved regs, set up $s0-$s3, load pinned ---- */
 void emit_block_prologue(void)
 {
-    EMIT_ADDIU(REG_SP, REG_SP, -80);
+    EMIT_ADDIU(REG_SP, REG_SP, -96);
     EMIT_SW(REG_RA, 44, REG_SP);
     EMIT_SW(REG_S0, 40, REG_SP);
     EMIT_SW(REG_S1, 36, REG_SP);
@@ -625,7 +625,7 @@ void emit_block_epilogue(void)
     EMIT_LW(REG_S1, 36, REG_SP);
     EMIT_LW(REG_S0, 40, REG_SP);
     EMIT_LW(REG_RA, 44, REG_SP);
-    EMIT_ADDIU(REG_SP, REG_SP, 80);
+    EMIT_ADDIU(REG_SP, REG_SP, 96);
     EMIT_JR(REG_RA);
     EMIT_NOP();
 }
@@ -727,15 +727,17 @@ uint32_t *compile_block(uint32_t psx_pc)
     dyn_load_slots();
 
     /* ISC optimization: if block doesn't modify SR (no MTC0/RFE), cache the
-     * IsC bit (SR bit 16) in stack slot SP+0 once at block entry.  Per-store
+     * IsC bit (SR bit 16) in stack slot SP+80 once at block entry.  Per-store
      * ISC checks then read from the stack (3 words) instead of loading SR
-     * and extracting the bit each time (5 words).  Saves 2 words per store. */
+     * and extracting the bit each time (5 words).  Saves 2 words per store.
+     * NOTE: offset 80 chosen to avoid conflict with the lite trampoline which
+     * saves T0-T7 at offsets 0-24,76. */
     if (!scan.has_mtc0_sr) {
         block_isc_cached = 1;
         EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);              /* at = SR           */
         emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02));         /* srl at, at, 16    */
         emit(MK_I(0x0C, REG_AT, REG_AT, 1));                /* andi at, at, 1    */
-        EMIT_SW(REG_AT, 0, REG_SP);                          /* sw at, 0(sp)      */
+        EMIT_SW(REG_AT, 80, REG_SP);                         /* sw at, 80(sp)     */
     } else {
         block_isc_cached = 0;
     }

@@ -850,11 +850,11 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
 
     /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
      * must be ignored (it's a cache invalidation, not a real RAM write).
-     * When block_isc_cached, the bit is pre-cached in SP+0 (3 words).
+     * When block_isc_cached, the bit is pre-cached in SP+80 (3 words).
      * Otherwise load SR inline and extract the bit (5 words). */
     uint32_t *isc_branch;
     if (block_isc_cached) {
-        EMIT_LW(REG_AT, 0, REG_SP);                         /* at = cached ISC   */
+        EMIT_LW(REG_AT, 80, REG_SP);                         /* at = cached ISC   */
         isc_branch = code_ptr;
         emit(MK_I(0x05, REG_AT, REG_ZERO, 0));              /* bne at,zero,@cold */
         EMIT_NOP();
@@ -1040,7 +1040,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     /* Cache Isolation check (cached or inline, same as emit_memory_write) */
     uint32_t *isc_branch;
     if (block_isc_cached) {
-        EMIT_LW(REG_AT, 0, REG_SP);
+        EMIT_LW(REG_AT, 80, REG_SP);
         isc_branch = code_ptr;
         emit(MK_I(0x05, REG_AT, REG_ZERO, 0)); /* bne at,zero,@slow */
         EMIT_NOP();

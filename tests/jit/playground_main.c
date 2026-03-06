@@ -70,36 +70,7 @@ uint8_t  cdrom_irq_active = 0;
 /* --- Timers --- */
 void     Timer_ScheduleAll(void)                    {}
 
-/* --- GTE --- */
-void     GTE_Execute(uint32_t op, R3000CPU *c)      { (void)op; (void)c; }
-uint32_t GTE_ReadData(R3000CPU *c, int reg)          { (void)c; (void)reg; return 0; }
-void     GTE_WriteData(R3000CPU *c, int reg, uint32_t v) { (void)c; (void)reg; (void)v; }
-uint32_t GTE_ReadCtrl(R3000CPU *c, int reg)          { (void)c; (void)reg; return 0; }
-void     GTE_WriteCtrl(R3000CPU *c, int reg, uint32_t v) { (void)c; (void)reg; (void)v; }
-void     GTE_VBlankUpdate(void)                     {}
-/* GTE Inline wrappers — signatures must match include/superpsx.h exactly */
-void GTE_Inline_RTPS(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCLIP(R3000CPU *c)                  { (void)c; }
-void GTE_Inline_OP(R3000CPU *c, int sf, int lm)    { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_DPCS(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_INTPL(R3000CPU *c, int sf, int lm) { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_MVMVA(R3000CPU *c, uint32_t pk)    { (void)c; (void)pk; }
-void GTE_Inline_NCDS(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_CDP(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCDT(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCCS(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_CC(R3000CPU *c, int sf, int lm)    { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCS(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCT(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_SQR(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_DCPL(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_DPCT(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_AVSZ3(R3000CPU *c)                  { (void)c; }
-void GTE_Inline_AVSZ4(R3000CPU *c)                  { (void)c; }
-void GTE_Inline_RTPT(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_GPF(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_GPL(R3000CPU *c, int sf, int lm)   { (void)c; (void)sf; (void)lm; }
-void GTE_Inline_NCCT(R3000CPU *c, int sf, int lm)  { (void)c; (void)sf; (void)lm; }
+/* --- GTE --- (real implementations from gte.c; no stubs needed) */
 
 /* --- Loader --- */
 int  Load_PSX_EXE(const char *p, uint32_t *pc)     { (void)p; (void)pc; return -1; }
@@ -191,6 +162,8 @@ void pg_reset_jit_cache(void)
     FlushCache(2);
 }
 
+int pg_dump_next_block = 0; /* set to 1 to dump next compiled block */
+
 void pg_run_jit(uint32_t pc, int32_t cycles)
 {
     cpu.cycles_left = cycles;
@@ -200,6 +173,7 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
     global_cycles = 0;
 
     int max_dispatches = 200;
+    int first_block = 1;
 
     while (cpu.cycles_left > 0 && max_dispatches-- > 0) {
         uint32_t curr_pc = cpu.pc;
@@ -212,6 +186,19 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
         BlockEntry *be;
         uint32_t *block = dynarec_ensure_block(curr_pc, &be);
         if (!block) break;
+
+        /* Hex dump of the compiled native code */
+        if (pg_dump_next_block && first_block) {
+            first_block = 0;
+            int nwords = (int)be->native_count;
+            if (nwords > 200) nwords = 200;
+            printf("  [DUMP] block PC=0x%08X nwords=%d\n",
+                   curr_pc, nwords);
+            for (int i = 0; i < nwords; i++) {
+                printf("  [%3d] 0x%08X\n", i, block[i]);
+            }
+            pg_dump_next_block = 0;
+        }
 
         int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cpu.cycles_left);
         cpu.cycles_left = remaining;

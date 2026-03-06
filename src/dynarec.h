@@ -395,6 +395,8 @@ void dyn_reload_slots(void);
 void dyn_reset_slots(void);
 void dyn_flush_dirty_slots(void);
 void dyn_flush_all_slots(void);
+void dyn_flush_verify_slots(void);
+extern uint32_t dyn_mismatch_count;
 void dyn_flush_one_slot(int r);
 void dyn_reload_one_slot(int r);
 

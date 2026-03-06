@@ -22,22 +22,22 @@ cmake --build build 2>&1 | tail -5
 # GTE test (expect: 1150 passed, 0 failed) — 20s is enough
 rm -f build/superpsx.ini && printf "gte_vu0 = 0\n" > build/superpsx.ini && \
 perl -e 'alarm 20; exec @ARGV' make -C build run \
-  GAMEARGS=tests/gte/test-all/test-all.exe > /tmp/gte_out.txt 2>&1; \
-grep -E "Passed|Failed" /tmp/gte_out.txt | head -5; \
+  GAMEARGS=tests/gte/test-all/test-all.exe > ./build/gte_out.txt 2>&1; \
+pkill -f pcsx2 2>/dev/null; \
+grep -E "Passed|Failed" ./build/gte_out.txt | head -5; \
 rm -f build/superpsx.ini && ln -sf $(pwd)/superpsx.ini build/superpsx.ini
 
 # CPU test (expect: Result 00000101) — 20s is enough
-# NOTE: CPU test output goes to PCSX2 emulog, NOT stdout/stderr.
-# Must clear emulog before running, then check it after.
-cat /dev/null > ~/Library/Application\ Support/PCSX2/logs/emulog.txt && \
 perl -e 'alarm 20; exec @ARGV' make -C build run \
-  GAMEARGS=tests/psxtest_cpu/psxtest_cpu.exe > /tmp/cpu_out.txt 2>&1; \
-grep 'Result:' ~/Library/Application\ Support/PCSX2/logs/emulog.txt | head -3
+  GAMEARGS=tests/psxtest_cpu/psxtest_cpu.exe > ./build/cpu_out.txt 2>&1; \
+pkill -f pcsx2 2>/dev/null; \
+grep 'Result:' ./build/cpu_out.txt | head -3
 
 # Timer test — 20s is enough
 perl -e 'alarm 20; exec @ARGV' make -C build run \
-  GAMEARGS=tests/timers/timers.exe > /tmp/timer_out.txt 2>&1; \
-tail -5 /tmp/timer_out.txt
+  GAMEARGS=tests/timers/timers.exe > ./build/timer_out.txt 2>&1; \
+pkill -f pcsx2 2>/dev/null; \
+tail -5 ./build/timer_out.txt
 
 # Crash Bandicoot (manual test — ask user)
 make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
@@ -47,22 +47,23 @@ make -C build run GAMEARGS=isos/CrashBandicoot/CrashBandicoot.cue
 
 - All tests run BIOS first, so if you broke jit maybe the Phase 1 (BIOS) test will fail instead of Phase 2 (CPU/GTE). Check the actual test output to confirm.
 - macOS has no `timeout`/`gtimeout`. Use `perl -e 'alarm N; exec @ARGV'` for timeouts.
-- **Always redirect to file** (`> /tmp/out.txt 2>&1`), NEVER pipe (`|`). Pipes cause SIGPIPE to kill the emulator prematurely.
-- **PCSX2 emulog.txt is CUMULATIVE** across runs. Always clear it before each test run: `cat /dev/null > ~/Library/Application\ Support/PCSX2/logs/emulog.txt`
+- **Always redirect to file** (`> ./build/out.txt 2>&1`), NEVER pipe (`|`). Pipes cause SIGPIPE to kill the emulator prematurely.
+- After each `perl -e 'alarm ...'` test, add `pkill -f pcsx2 2>/dev/null` to clean up the PCSX2 process.
 - For GPU/rendering changes, do NOT run automated tests — ask the user to launch Crash Bandicoot and MK2 manually and report results.
 
 ## JIT Playground
 
-A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 62 micro-tests split across 4 category files.
+A separate ELF (`jit_playground.elf`) for testing the dynarec in isolation with a mini-DSL. 72 micro-tests split across 5 category files.
 
 ```bash
 # Build playground (EXCLUDE_FROM_ALL — not built by default)
 cmake --build build --target jit_playground.elf 2>&1 | tail -5
 
-# Run playground (expect: 62/62 passed) — 15s is enough
+# Run playground (expect: 72/72 passed) — 15s is enough
 perl -e 'alarm 15; exec @ARGV' make -C build run-playground \
-  > /tmp/playground_out.txt 2>&1; \
-grep -E "Results|FAIL" /tmp/playground_out.txt
+  > ./build/playground_out.txt 2>&1; \
+pkill -f pcsx2 2>/dev/null; \
+grep -E "Results|FAIL" ./build/playground_out.txt
 ```
 
 **Key files:**
@@ -74,20 +75,21 @@ grep -E "Results|FAIL" /tmp/playground_out.txt
 - `tests/jit/test_memory.c` — Load/Store + ISC: LW/SW, LB/SB, LH/SH, LWL/LWR, SWL/SWR, MFC0, ISC checks (13 tests)
 - `tests/jit/test_branch.c` — Branches: BEQ, BNE, BLTZ, BGEZ, BLEZ, BGTZ, delay slots (7 tests)
 - `tests/jit/test_block.c` — Interactions, cross-block, loops, nested JAL, all-32-regs, dynamic alloc stress, prologue/pin (21 tests)
+- `tests/jit/test_dirty.c` — Dirty writeback: single/multi slot, cross-block, branch paths, loop, SW-to-RAM, three-block chain (10 tests)
 - `docs/jit_playground.md` — Design document
 
-**Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, or `pg_run_block_tests`).
+**Adding new tests:** Write a `static void test_xxx(void)` in the appropriate category file using `BEGIN_TEST/SET_REG/EMIT/RUN/EXPECT_REG/END_TEST` macros, then call it from the category runner (`pg_run_alu_tests`, `pg_run_memory_tests`, `pg_run_branch_tests`, `pg_run_block_tests`, or `pg_run_dirty_tests`).
 
-**Before committing JIT changes:** run the playground (`62/62 passed`) in addition to the standard GTE/CPU/Timer tests.
+**Before committing JIT changes:** run the playground (`72/72 passed`) in addition to the standard GTE/CPU/Timer tests.
 
 ## Testing Protocol
 
 Before committing ANY change to the dynarec or emulation core:
 
 1. Build must succeed with zero warnings (except known ones in tlb_handler.c when TLB disabled)
-2. **JIT Playground: 62/62 passed** (for dynarec changes)
+2. **JIT Playground: 72/72 passed** (for dynarec changes)
 3. GTE: 1150 passed, 0 failed
-4. CPU: Result 00000101 (check PCSX2 emulog.txt, NOT stdout)
+4. CPU: Result 00000101
 5. Timer test: must complete without hangs
 6. **For GPU/rendering changes:** ask the user to test Crash Bandicoot and MK2 manually
 
@@ -101,17 +103,35 @@ Before committing ANY change to the dynarec or emulation core:
 
 ## JIT Register Allocation
 
-10 PSX registers are permanently pinned to EE hardware registers:
+4 PSX registers are permanently pinned to EE callee-saved registers:
 
-- Caller-saved: v0→T3, v1→T4, a0→T5, a1→T6, a2→T7
-- Callee-saved: s0→S6, s1→S7, gp→FP, sp→S4, ra→S5
+- Pinned: gp→S6, sp→S4, fp→S7, ra→S5
 - Infrastructure: S0=cpu ptr, S1=RAM/TLB base, S2=cycles, S3=mask(0x1FFFFFFF)
-- Dynamic slots: T0, T1, T2 (frequency-based per-block assignment, partial dirty tracking)
+- Dynamic slots: T0-T7 (8 slots, frequency-based per-block assignment, dirty writeback)
 - Scratch: T8, T9 (with scratch cache for non-pinned regs), AT
 
-The other 19 PSX GPRs go through `LW/SW` to `cpu.regs[]` (offset from S0).
+The other 27 non-pinned PSX GPRs compete for 8 dynamic slots (T0-T7). Unslotted regs go through `LW/SW` to `cpu.regs[]` (offset from S0).
 
-Dynamic slots use partial dirty tracking: `emit_cpu_field_to_psx_reg`, `emit_materialize_psx_imm`, and `flush_dirty_consts` defer writes to cpu.regs[]. `emit_store_psx_reg` and `emit_sync_reg` use write-through (required for game correctness — root cause TBD).
+### Dirty Writeback Protocol
+
+Dynamic slots use compile-time dirty tracking via `dyn_dirty_mask` (uint8_t):
+
+- `emit_store_psx_reg` / `emit_sync_reg` / `flush_dirty_consts`: update slot EE register + set dirty bit
+- `dyn_flush_dirty_slots()`: emit SW only for dirty slots, clear mask
+- `dyn_flush_all_slots()`: emit SW for ALL assigned slots, clear mask
+
+7 flush sites labeled A-G:
+
+- **A** (emit_call_c): `flush-all` — mid-block full C call
+- **B** (emit_call_c_lite): `flush-all` — mid-block lite C call
+- **C** (emit_abort_check): `dirty-only` — conditional abort path
+- **D** (deferred taken): `flush-all` — branch-taken cold code
+- **E** (block epilogue): `dirty-only` — block exit return to C
+- **F** (branch epilogue): `dirty-only` — direct block link exit
+- **G** (JR/JALR dispatch): `dirty-only` — register jump exit
+
+A, B, D require flush-all (dirty-only causes glitches in Crash Bandicoot — root cause TBD).
+C, E, F, G work correctly with dirty-only.
 
 ## Code Buffer Layout
 

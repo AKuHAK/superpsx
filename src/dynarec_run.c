@@ -238,7 +238,7 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x23, REG_SP, REG_S1, 36);
         *p++ = MK_I(0x23, REG_SP, REG_S0, 40);
         *p++ = MK_I(0x23, REG_SP, REG_RA, 44);
-        *p++ = MK_I(0x09, REG_SP, REG_SP, 80);
+        *p++ = MK_I(0x09, REG_SP, REG_SP, 96);
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);
         *p++ = 0;
     }

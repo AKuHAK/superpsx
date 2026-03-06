@@ -222,9 +222,11 @@ set(PLAYGROUND_SOURCES
     tests/jit/test_branch.c
     tests/jit/test_block.c
     tests/jit/test_dirty.c
+    tests/jit/test_gte.c
     src/cpu.c
     src/memory.c
     src/scheduler.c
+    src/gte.c
     src/dynarec_emit.c
     src/dynarec_cache.c
     src/dynarec_memory.c

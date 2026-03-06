@@ -151,6 +151,52 @@ void dyn_flush_all_slots(void)
     dyn_dirty_mask = 0;
 }
 
+/* ---- Runtime invariant checker for dirty writeback ----
+ * For each NON-DIRTY assigned slot, emits:
+ *   LW AT, cpu.regs[psx](S0)
+ *   BEQ AT, slot_ee, @ok
+ *   NOP
+ *   SW slot_ee, cpu.regs[psx](S0)   ; fix the mismatch
+ *   <increment dyn_mismatch_count>
+ * @ok:
+ * For each DIRTY slot, normal SW.
+ * This detects when the compile-time dirty mask doesn't match the
+ * runtime state (non-dirty slot value != cpu.regs[]). */
+uint32_t dyn_mismatch_count = 0;
+
+void dyn_flush_verify_slots(void)
+{
+    if (!dyn_slots_active) return;
+    for (int i = 0; i < DYN_SLOT_COUNT; i++) {
+        if (dyn_slot_psx[i] < 0) continue;
+        if (dyn_dirty_mask & (1u << i)) {
+            /* Dirty: normal flush */
+            EMIT_SW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
+        } else {
+            /* Non-dirty: verify slot == cpu.regs[], fix + count if not */
+            EMIT_LW(REG_AT, CPU_REG(dyn_slot_psx[i]), REG_S0);
+            uint32_t *beq = code_ptr;
+            emit(MK_I(0x04, REG_AT, dyn_slot_ee[i], 0)); /* BEQ AT, T_i, @ok */
+            EMIT_NOP();
+            /* Mismatch: write correct value to cpu.regs[] and bump counter */
+            EMIT_SW(dyn_slot_ee[i], CPU_REG(dyn_slot_psx[i]), REG_S0);
+            {
+                uint32_t addr = (uint32_t)&dyn_mismatch_count;
+                uint16_t lo = addr & 0xFFFF;
+                uint16_t hi = (addr + 0x8000) >> 16;
+                EMIT_LUI(REG_AT, hi);
+                EMIT_LW(REG_T9, (int16_t)lo, REG_AT);
+                EMIT_ADDIU(REG_T9, REG_T9, 1);
+                EMIT_SW(REG_T9, (int16_t)lo, REG_AT);
+            }
+            /* Patch BEQ to skip mismatch handler */
+            int32_t skip = (int32_t)(code_ptr - beq - 1);
+            *beq = (*beq & 0xFFFF0000) | ((uint32_t)skip & 0xFFFF);
+        }
+    }
+    dyn_dirty_mask = 0;
+}
+
 /* Flush a single dynamic slot for PSX register 'r' IF it's dirty.
  * Used by overflow cold paths (ADD/SUB/ADDI) to save rd before clobbering. */
 void dyn_flush_one_slot(int r)
@@ -442,44 +488,39 @@ void emit_flush_pinned_selective(uint32_t mask)
 
 /* Emit a JAL to a C helper function with pinned register sync.
  * Flushes pinned regs to cpu struct before call (for exception safety),
- * and reloads them after return (C code may have modified cpu.regs[]). */
+ * and reloads them after return (C code may have modified cpu.regs[]).
+ * T0-T7 (dynamic slots) are clobbered by C ABI and reloaded from
+ * cpu.regs[] after the call. Dirty-only flush is safe because the
+ * reload picks up any changes the C helper made. */
 void emit_call_c(uint32_t func_addr)
 {
-    /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
-    /* Flush dirty dynamic slots so C helper sees current cpu.regs[] */
-    dyn_flush_all_slots(); /* A: emit_call_c — flush-all (mid-block C call) */
-    /* Flush S2 to memory so C code sees current cycles_left */
+    dyn_flush_dirty_slots(); /* A: dirty-only — safe with reload */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
-
-    /* Use the shared trampoline to flush/reload pinned registers and provide ABI shadow space
-     * without emitting 24 instructions per C-call. Target is passed in REG_T8. */
     emit_load_imm32(REG_T8, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_addr);
     EMIT_NOP();
-    /* C helpers via call_c may write cpu.regs[] — reload dynamic slots
-     * from cpu.regs[] to pick up any changes (T0-T7 are clobbered). */
     dyn_reload_slots();
     reg_cache_invalidate();
-    /* SMRV: C helper may change any cpu.regs[], invalidate all
-     * known-RAM hints except $sp which is always RAM. */
     smrv_known_ram = (1u << 29);
 }
 
+/* Emit a JAL to a C helper that does NOT modify cpu.regs[].
+ * Uses the lite trampoline which saves/restores T0-T7 to the block's
+ * stack frame.  Only dirty dynamic slots are flushed to cpu.regs[]
+ * before the call; the trampoline preserves slot register values.
+ * NOTE: the ISC cache is now at offset 80(sp), so the T0 save at
+ * 0(sp) no longer conflicts with it. */
 void emit_call_c_lite(uint32_t func_addr)
 {
-    /* Materialize any lazy constants before the C call */
     flush_dirty_consts();
-    /* Flush dirty dynamic slots so C helper sees current cpu.regs[] */
-    dyn_flush_all_slots(); /* B: emit_call_c_lite — flush-all (mid-block C call) */
-    /* Lightweight trampoline for C helpers that do NOT read/write cpu.regs[].
-     * Saves/restores ALL 8 dynamic slot regs (T0-T7) to stack.
-     * Callee-saved pins (S4/S5/S6/S7) preserved by C ABI. */
+    dyn_flush_dirty_slots(); /* B: dirty-only — safe; T0-T7 preserved by lite tramp */
     EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
     emit_load_imm32(REG_T8, func_addr);
     EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
     EMIT_NOP();
-    /* T0-T7 (dynamic slots) preserved by lite trampoline save/restore */
+    /* T0-T7 (dynamic slots) preserved by lite trampoline save/restore.
+     * Pinned regs (S4-S7) preserved by C ABI. */
     reg_cache_invalidate();
 }
 

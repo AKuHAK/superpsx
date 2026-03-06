@@ -21,6 +21,12 @@
 
 /* ---- Externs from dynarec ---- */
 extern uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be);
+extern int block_lite_calls;  /* set during compilation */
+extern int block_full_calls;
+
+/* Trampoline sizes (EE words) — counted from dynarec_run.c Init_Dynarec */
+#define TRAMP_LITE_WORDS  24   /* 8 sw + 6 call + 8 lw + jr + nop */
+#define TRAMP_FULL_WORDS  18   /* 4 sw pinned + 6 call + 4 lw pinned + jr + nop */
 
 /* ---- Helper: enable COP2 in SR (needed for GTE instructions) ---- */
 static void expansion_enable_cop2(void)
@@ -36,9 +42,18 @@ static void expansion_enable_cop2(void)
  * ================================================================ */
 typedef void (*setup_fn_t)(void);
 
-static int compile_and_measure(const uint32_t *insns, int insn_types,
-                               int repeat, setup_fn_t setup)
+typedef struct {
+    int native;       /* EE words in the compiled block */
+    int lite_calls;   /* emit_call_c_lite count */
+    int full_calls;   /* emit_call_c count */
+    int effective;    /* native + trampoline overhead */
+} ExpResult;
+
+static ExpResult compile_and_measure_ex(const uint32_t *insns, int insn_types,
+                                         int repeat, setup_fn_t setup)
 {
+    ExpResult res = {0, 0, 0, 0};
+
     /* Reset CPU state */
     memset(&cpu, 0, sizeof(cpu));
     cpu.regs[R_SP] = 0x801FFF00u;
@@ -78,8 +93,25 @@ static int compile_and_measure(const uint32_t *insns, int insn_types,
     BlockEntry *be = NULL;
     uint32_t *block = dynarec_ensure_block(PG_CODE_BASE, &be);
     if (!block || !be)
-        return -1;
-    return (int)be->native_count;
+    {
+        res.native = -1;
+        return res;
+    }
+    res.native = (int)be->native_count;
+    res.lite_calls = block_lite_calls;
+    res.full_calls = block_full_calls;
+    res.effective = res.native
+                  + res.lite_calls * TRAMP_LITE_WORDS
+                  + res.full_calls * TRAMP_FULL_WORDS;
+    return res;
+}
+
+/* Legacy wrapper for simple tests that only need native count */
+static int compile_and_measure(const uint32_t *insns, int insn_types,
+                               int repeat, setup_fn_t setup)
+{
+    ExpResult r = compile_and_measure_ex(insns, insn_types, repeat, setup);
+    return r.native;
 }
 
 /* ---- Assertion helper: check expansion within threshold ---- */
@@ -194,6 +226,7 @@ static void test_expansion_gte(void)
 {
     BEGIN_TEST("expansion_gte");
     int ee;
+    ExpResult r;
 
     ee = compile_and_measure(&(uint32_t){PSX_MTC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
     check_expansion("MTC2", ee, 84, &pg_ctx);
@@ -201,11 +234,18 @@ static void test_expansion_gte(void)
     ee = compile_and_measure(&(uint32_t){PSX_MFC2(R_T1, GTE_VXY0)}, 1, REPEAT, expansion_enable_cop2);
     check_expansion("MFC2", ee, 85, &pg_ctx);
 
-    ee = compile_and_measure(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 RTPS", ee, 210, &pg_ctx);
+    r = compile_and_measure_ex(&(uint32_t){GTE_CMD_RTPS(1, 1)}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("COP2 RTPS", r.native, 210, &pg_ctx);
+    printf("      -> effective: %d EE (%4.1fx) [%d lite calls × %d tramp]\n",
+           r.effective, (float)r.effective / 18.0f, r.lite_calls, TRAMP_LITE_WORDS);
 
-    ee = compile_and_measure(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 NCLIP", ee, 295, &pg_ctx);
+    r = compile_and_measure_ex(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
+    check_expansion("COP2 NCLIP", r.native, 295, &pg_ctx);
+    if (r.lite_calls > 0)
+        printf("      -> effective: %d EE (%4.1fx) [%d lite calls × %d tramp]\n",
+               r.effective, (float)r.effective / 18.0f, r.lite_calls, TRAMP_LITE_WORDS);
+    else
+        printf("      -> INLINE (0 C calls) — effective = native\n");
 
     /* LWC2/SWC2 — coprocessor memory transfers (inline since P3 extension) */
     ee = compile_and_measure(&(uint32_t){PSX_LWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);

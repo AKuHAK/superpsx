@@ -19,6 +19,8 @@ uint32_t block_pinned_dirty_mask = 0;
 int block_isc_cached = 0;    /* 1 if ISC bit cached in SP+80 for current block */
 int block_has_isc_write = 0; /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
 int block_cu2_hoisted = 0;   /* 1 if CU2 check hoisted to block prologue */
+int block_lite_calls = 0;    /* # of emit_call_c_lite calls in current block */
+int block_full_calls = 0;    /* # of emit_call_c calls in current block */
 int dynarec_load_defer = 0;
 int dynarec_lwx_pending = 0;
 
@@ -819,6 +821,8 @@ uint32_t *compile_block(uint32_t psx_pc)
     block_cycle_count = 0;
     emit_cycle_offset = 0;
     deferred_taken_count = 0;
+    block_lite_calls = 0;
+    block_full_calls = 0;
 
     if (blocks_compiled < 20)
     {

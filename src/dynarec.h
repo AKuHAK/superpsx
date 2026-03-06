@@ -278,6 +278,8 @@ extern uint32_t block_pinned_dirty_mask; /* Pinned regs written in current block
 extern int block_isc_cached;             /* 1 if ISC bit is cached in SP+0 for this block */
 extern int block_has_isc_write;          /* 1 if block can toggle ISC via MTC0 to SR (not RFE) */
 extern int block_cu2_hoisted;            /* 1 if CU2 check hoisted to block prologue */
+extern int block_lite_calls;             /* # of emit_call_c_lite calls in current block */
+extern int block_full_calls;             /* # of emit_call_c calls in current block */
 extern uint32_t emit_current_psx_pc;
 extern int dynarec_load_defer;
 extern int dynarec_lwx_pending;

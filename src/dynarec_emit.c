@@ -578,6 +578,7 @@ void emit_flush_pinned_selective(uint32_t mask)
  * reload picks up any changes the C helper made. */
 void emit_call_c(uint32_t func_addr)
 {
+    block_full_calls++;
     flush_dirty_consts();
     dyn_flush_dirty_slots(); /* A: dirty-only — safe with reload */
     emit_load_imm32(REG_T8, func_addr);
@@ -597,6 +598,7 @@ void emit_call_c(uint32_t func_addr)
  * 0(sp) no longer conflicts with it. */
 void emit_call_c_lite(uint32_t func_addr)
 {
+    block_lite_calls++;
     flush_dirty_consts();
     dyn_flush_dirty_slots(); /* B: dirty-only — safe; T0-T7 preserved by lite tramp */
     emit_load_imm32(REG_T8, func_addr);

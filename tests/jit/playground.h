@@ -126,6 +126,10 @@
 #define PSX_BLTZAL(rs,off)      MK_I(0x01, (rs), 0x10, (off))
 #define PSX_BGEZAL(rs,off)      MK_I(0x01, (rs), 0x11, (off))
 
+/* LWC2 / SWC2 — Coprocessor 2 load/store (GTE) */
+#define PSX_LWC2(rt,off,rs)    MK_I(0x32, (rs), (rt), (off))
+#define PSX_SWC2(rt,off,rs)    MK_I(0x3A, (rs), (rt), (off))
+
 /* COP0 */
 #define PSX_MTC0(rt,rd)  ((0x10u << 26) | (0x04u << 21) | ((rt) << 16) | ((rd) << 11))
 #define PSX_MFC0(rt,rd)  ((0x10u << 26) | (0x00u << 21) | ((rt) << 16) | ((rd) << 11))

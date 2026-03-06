@@ -1291,10 +1291,38 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             emit_memory_read(4, 0, rs, imm, 0); /* V0 = word from [rs+imm] */
             dynarec_load_defer = saved_defer;
         }
-        EMIT_MOVE(REG_A0, REG_S0);
-        emit_load_imm32(REG_A1, rt);
-        EMIT_MOVE(6, REG_V0);
-        emit_call_c((uint32_t)GTE_WriteData);
+        /* Inline GTE write for simple data registers (same as MTC2 P3) */
+        {
+            int rt5 = rt & 0x1F;
+            switch (rt5) {
+            case 15: case 28: case 30:
+                /* Complex: SXY FIFO / IRGB / LZCS — keep C call (lite) */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, rt5);
+                EMIT_MOVE(6, REG_V0);
+                emit_flush_partial_cycles();
+                emit_call_c_lite((uint32_t)GTE_WriteData);
+                break;
+            case 29: case 31:
+                /* Read-only: no-op (just discard loaded value) */
+                break;
+            case 1: case 3: case 5: case 8: case 9: case 10: case 11:
+                /* Sign-extend 16 + store */
+                emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x00));  /* sll v0, 16 */
+                emit(MK_R(0, 0, REG_V0, REG_V0, 16, 0x03));  /* sra v0, 16 */
+                EMIT_SW(REG_V0, CPU_CP2_DATA(rt5), REG_S0);
+                break;
+            case 7: case 16: case 17: case 18: case 19:
+                /* Zero-extend 16 + store */
+                emit(MK_I(0x0C, REG_V0, REG_V0, 0xFFFF));
+                EMIT_SW(REG_V0, CPU_CP2_DATA(rt5), REG_S0);
+                break;
+            default:
+                /* Simple store */
+                EMIT_SW(REG_V0, CPU_CP2_DATA(rt5), REG_S0);
+                break;
+            }
+        }
     }
     break;
 
@@ -1357,10 +1385,26 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
         }
 
-        /* GTE read → V0 (data to store) */
-        EMIT_MOVE(REG_A0, REG_S0);
-        emit_load_imm32(REG_A1, rt);
-        emit_call_c((uint32_t)GTE_ReadData);
+        /* Inline GTE read for simple data registers (same as MFC2 P3) */
+        {
+            int rt5 = rt & 0x1F;
+            switch (rt5) {
+            case 28: case 29:
+                /* Complex: IRGB/ORGB clamp — keep C call (lite) */
+                EMIT_MOVE(REG_A0, REG_S0);
+                emit_load_imm32(REG_A1, rt5);
+                emit_call_c_lite((uint32_t)GTE_ReadData);
+                break;
+            case 15:
+                /* SXY2 always returns D(14) */
+                EMIT_LW(REG_V0, CPU_CP2_DATA(14), REG_S0);
+                break;
+            default:
+                /* Simple read */
+                EMIT_LW(REG_V0, CPU_CP2_DATA(rt5), REG_S0);
+                break;
+            }
+        }
 
         /* Memory write via fast path (data stays in V0, addr in T8) */
         emit_load_psx_reg(REG_T8, rs);

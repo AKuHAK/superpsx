@@ -234,6 +234,10 @@ int main(int argc, char *argv[])
     /* 2. Initialise CPU struct */
     Init_CPU();
 
+    /* 2b. Enable GTE fast paths (gte_use_vu0) for inline GTE tests */
+    psx_config.gte_vu0 = 1;
+    gte_use_vu0 = 1;
+
     /* 3. Initialise dynarec (allocates code_buffer, builds trampolines) */
     Init_Dynarec();
 

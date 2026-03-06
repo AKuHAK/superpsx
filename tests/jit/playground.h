@@ -158,6 +158,7 @@
 #define GTE_CMD_RTPS(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x01)
 #define GTE_CMD_NCLIP         PSX_COP2(0x06)
 #define GTE_CMD_AVSZ3         PSX_COP2(0x2D)
+#define GTE_CMD_AVSZ4         PSX_COP2(0x2E)
 #define GTE_CMD_RTPT(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x30)
 
 /* GTE data register indices */
@@ -172,11 +173,13 @@
 #define GTE_SZ2  18
 #define GTE_SZ3  19
 #define GTE_OTZ  7   /* Average Z value */
+#define GTE_MAC0 24  /* MAC0 (NCLIP result, AVSZ result, etc.) */
 #define GTE_MAC1 25
 #define GTE_MAC2 26
 #define GTE_MAC3 27
 
 /* GTE control register indices */
+#define GTE_FLAG_CTRL 31 /* FLAG register (ctrl[31]: overflow/saturation bits) */
 #define GTE_RT11RT12 0  /* Rotation matrix [0] */
 #define GTE_RT13RT21 1
 #define GTE_RT22RT23 2
@@ -190,6 +193,8 @@
 #define GTE_H       26  /* Projection plane distance */
 #define GTE_DQA     27
 #define GTE_DQB     28
+#define GTE_ZSF3    29  /* Z scale factor 3 (for AVSZ3) */
+#define GTE_ZSF4    30  /* Z scale factor 4 (for AVSZ4) */
 
 /* ================================================================
  *  Test Framework
@@ -385,6 +390,30 @@ extern PGTestCtx pg_ctx;
         pg_results.failed++;                                             \
     }                                                                    \
 } while(0)
+
+/* GTE register assertions */
+#define EXPECT_CP2_DATA(idx, expected) do {                              \
+    uint32_t _got = cpu.cp2_data[(idx)];                                 \
+    uint32_t _exp = (uint32_t)(expected);                                \
+    if (_got != _exp) {                                                  \
+        printf("  [FAIL] %s: cp2_data[%d] expected=0x%08X got=0x%08X\n",\
+               pg_ctx.name, (idx), (unsigned)_exp, (unsigned)_got);      \
+        pg_ctx.fail_count++;                                             \
+    }                                                                    \
+} while(0)
+
+#define EXPECT_CP2_CTRL(idx, expected) do {                              \
+    uint32_t _got = cpu.cp2_ctrl[(idx)];                                 \
+    uint32_t _exp = (uint32_t)(expected);                                \
+    if (_got != _exp) {                                                  \
+        printf("  [FAIL] %s: cp2_ctrl[%d] expected=0x%08X got=0x%08X\n",\
+               pg_ctx.name, (idx), (unsigned)_exp, (unsigned)_got);      \
+        pg_ctx.fail_count++;                                             \
+    }                                                                    \
+} while(0)
+
+/* Pack signed 16-bit X,Y into SXY register format */
+#define PACK_SXY(x, y)  ((uint32_t)((((y) & 0xFFFF) << 16) | ((x) & 0xFFFF)))
 
 /* ================================================================
  *  Test category runners (one per file)

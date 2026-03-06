@@ -295,6 +295,145 @@ static void test_gte_cu2_dirty_mask_regression(void)
 
 
 /* ================================================================
+ * Test 6: NCLIP basic — counter-clockwise triangle → positive result
+ *
+ * SXY0=(0,0), SXY1=(100,0), SXY2=(0,100)
+ * MAC0 = 0*(0-100) + 100*(100-0) + 0*(0-0) = 10000
+ * FLAG = 0 (no overflow for small screen coords)
+ * ================================================================ */
+static void test_gte_nclip_positive(void)
+{
+    BEGIN_TEST("gte_nclip_positive");
+    gte_enable_cop2();
+
+    /* Set SXY vertices directly in cp2_data */
+    cpu.cp2_data[GTE_SXY0] = PACK_SXY(0, 0);
+    cpu.cp2_data[GTE_SXY1] = PACK_SXY(100, 0);
+    cpu.cp2_data[GTE_SXY2] = PACK_SXY(0, 100);
+    cpu.cp2_data[GTE_MAC0] = 0xDEADBEEF;  /* canary */
+    cpu.cp2_ctrl[GTE_FLAG_CTRL] = 0xDEADBEEF;  /* canary */
+
+    /* Emit NCLIP command */
+    EMIT(GTE_CMD_NCLIP);
+
+    RUN(200);
+
+    /* MAC0 should be 10000 */
+    EXPECT_CP2_DATA(GTE_MAC0, 10000);
+    /* FLAG should be 0 (no overflow) */
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 7: NCLIP — clockwise triangle → negative result
+ *
+ * SXY0=(0,0), SXY1=(0,100), SXY2=(100,0)
+ * MAC0 = 0*(100-0) + 0*(0-0) + 100*(0-100) = -10000
+ * ================================================================ */
+static void test_gte_nclip_negative(void)
+{
+    BEGIN_TEST("gte_nclip_negative");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_SXY0] = PACK_SXY(0, 0);
+    cpu.cp2_data[GTE_SXY1] = PACK_SXY(0, 100);
+    cpu.cp2_data[GTE_SXY2] = PACK_SXY(100, 0);
+
+    EMIT(GTE_CMD_NCLIP);
+
+    RUN(200);
+
+    /* -10000 as uint32 = 0xFFFFD8F0 */
+    EXPECT_CP2_DATA(GTE_MAC0, (uint32_t)(int32_t)-10000);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 8: NCLIP — collinear points → zero result
+ *
+ * SXY0=(0,0), SXY1=(10,10), SXY2=(20,20)
+ * MAC0 = 0*(10-20) + 10*(20-0) + 20*(0-10) = 0 + 200 - 200 = 0
+ * ================================================================ */
+static void test_gte_nclip_zero(void)
+{
+    BEGIN_TEST("gte_nclip_zero");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_SXY0] = PACK_SXY(0, 0);
+    cpu.cp2_data[GTE_SXY1] = PACK_SXY(10, 10);
+    cpu.cp2_data[GTE_SXY2] = PACK_SXY(20, 20);
+    cpu.cp2_data[GTE_MAC0] = 0xDEADBEEF;
+
+    EMIT(GTE_CMD_NCLIP);
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC0, 0);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 9: NCLIP — negative screen coordinates
+ *
+ * SXY0=(-100,-50), SXY1=(100,-50), SXY2=(0,100)
+ * MAC0 = -100*(-50-100) + 100*(100-(-50)) + 0*(-50-(-50))
+ *       = -100*(-150) + 100*(150) + 0
+ *       = 15000 + 15000 = 30000
+ * ================================================================ */
+static void test_gte_nclip_negcoords(void)
+{
+    BEGIN_TEST("gte_nclip_negcoords");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_SXY0] = PACK_SXY(-100, -50);
+    cpu.cp2_data[GTE_SXY1] = PACK_SXY(100, -50);
+    cpu.cp2_data[GTE_SXY2] = PACK_SXY(0, 100);
+
+    EMIT(GTE_CMD_NCLIP);
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC0, 30000);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 10: NCLIP — MFC2 readback of MAC0
+ *
+ * Verify the NCLIP result can be read via MFC2 into a GPR,
+ * which is the real-world usage pattern.
+ * ================================================================ */
+static void test_gte_nclip_mfc2_readback(void)
+{
+    BEGIN_TEST("gte_nclip_mfc2_readback");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_SXY0] = PACK_SXY(0, 0);
+    cpu.cp2_data[GTE_SXY1] = PACK_SXY(100, 0);
+    cpu.cp2_data[GTE_SXY2] = PACK_SXY(0, 100);
+
+    SET_REG(R_V0, 0);
+
+    /* NCLIP → MFC2 readback → store to memory */
+    EMIT(GTE_CMD_NCLIP);
+    EMIT(PSX_MFC2(R_V0, GTE_MAC0));
+
+    RUN(200);
+
+    EXPECT_REG(R_V0, 10000);
+    END_TEST();
+}
+
+
+/* ================================================================
  *  Category runner
  * ================================================================ */
 void pg_run_gte_tests(void)
@@ -305,4 +444,9 @@ void pg_run_gte_tests(void)
     test_gte_mfc2_then_sw();
     test_gte_multi_call();
     test_gte_cu2_dirty_mask_regression();
+    test_gte_nclip_positive();
+    test_gte_nclip_negative();
+    test_gte_nclip_zero();
+    test_gte_nclip_negcoords();
+    test_gte_nclip_mfc2_readback();
 }

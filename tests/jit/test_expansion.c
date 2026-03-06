@@ -205,7 +205,7 @@ static void test_expansion_gte(void)
     check_expansion("COP2 RTPS", ee, 210, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){GTE_CMD_NCLIP}, 1, REPEAT, expansion_enable_cop2);
-    check_expansion("COP2 NCLIP", ee, 178, &pg_ctx);
+    check_expansion("COP2 NCLIP", ee, 295, &pg_ctx);
 
     /* LWC2/SWC2 — coprocessor memory transfers (inline since P3 extension) */
     ee = compile_and_measure(&(uint32_t){PSX_LWC2(GTE_VXY0, 0, R_SP)}, 1, REPEAT, expansion_enable_cop2);

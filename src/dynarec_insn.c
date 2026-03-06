@@ -1065,9 +1065,48 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 emit_call_c_lite((uint32_t)GTE_Inline_RTPS);
                 break;
             case 0x06: /* NCLIP */
-                EMIT_MOVE(REG_A0, REG_S0);
-                emit_flush_partial_cycles();
-                emit_call_c_lite((uint32_t)GTE_Inline_NCLIP);
+                if (gte_use_vu0)
+                {
+                    /* ---- Inline NCLIP (fast path) ----
+                     * MAC0 = SX0*(SY1-SY2) + SX1*(SY2-SY0) + SX2*(SY0-SY1)
+                     * FLAG = 0 (no overflow for typical screen coords)
+                     *
+                     * Uses LH to directly extract sign-extended int16 X/Y
+                     * from packed SXY registers (little-endian: X=lo16, Y=hi16).
+                     * Scratch: T8/T9/AT (SX), A0-A2 (SY then diffs), V0-V1 (diffs)
+                     * Uses EE pipeline 0 MULT/MADD/MFLO
+                     */
+
+                    /* Load 6 halfwords: SX0,SY0, SX1,SY1, SX2,SY2 */
+                    EMIT_LH(REG_T8, CPU_CP2_DATA(12) + 0, REG_S0); /* T8 = SX0 */
+                    EMIT_LH(REG_A0, CPU_CP2_DATA(12) + 2, REG_S0); /* A0 = SY0 */
+                    EMIT_LH(REG_T9, CPU_CP2_DATA(13) + 0, REG_S0); /* T9 = SX1 */
+                    EMIT_LH(REG_A1, CPU_CP2_DATA(13) + 2, REG_S0); /* A1 = SY1 */
+                    EMIT_LH(REG_AT, CPU_CP2_DATA(14) + 0, REG_S0); /* AT = SX2 */
+                    EMIT_LH(REG_A2, CPU_CP2_DATA(14) + 2, REG_S0); /* A2 = SY2 */
+
+                    /* Y differences */
+                    EMIT_SUBU(REG_V0, REG_A1, REG_A2);             /* V0 = SY1-SY2 */
+                    EMIT_SUBU(REG_V1, REG_A2, REG_A0);             /* V1 = SY2-SY0 */
+                    EMIT_SUBU(REG_A0, REG_A0, REG_A1);             /* A0 = SY0-SY1 */
+
+                    /* Multiply + accumulate */
+                    EMIT_MULT(REG_T8, REG_V0);                     /* LO = SX0*(SY1-SY2) */
+                    EMIT_MADD(REG_T9, REG_V1);                     /* LO += SX1*(SY2-SY0) */
+                    EMIT_MADD(REG_AT, REG_A0);                     /* LO += SX2*(SY0-SY1) */
+                    EMIT_MFLO(REG_V0);                              /* V0 = MAC0 */
+
+                    /* Store results */
+                    EMIT_SW(REG_V0, CPU_CP2_DATA(24), REG_S0);     /* MAC0 */
+                    EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);   /* FLAG = 0 */
+                }
+                else
+                {
+                    /* Exact C path — full 64-bit overflow detection */
+                    EMIT_MOVE(REG_A0, REG_S0);
+                    emit_flush_partial_cycles();
+                    emit_call_c_lite((uint32_t)GTE_Inline_NCLIP);
+                }
                 break;
             case 0x0C: /* OP */
                 EMIT_MOVE(REG_A0, REG_S0);

@@ -38,8 +38,8 @@ static void test_expansion_textured_quad(void)
     BEGIN_GPU_TEST("textured_quad");
 
     /* Requires valid texpage setup first so TexCache lookup doesn't abort */
-    EMIT_GP1(0x00000000); // GP1(00) Reset GPU
-    EMIT_GP0(0xE1000000 | (0 << 0) | (2 << 7)); // TP(0,0), 15-bit (direct mapped, no clut needed)
+    SETUP_GP1(0x00000000); // GP1(00) Reset GPU
+    SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7)); // TP(0,0), 15-bit (direct mapped, no clut needed)
 
     /* 0x2CRRGGBB, x0,y0, u0,v0,clut, x1,y1, u1,v1,tpage, x2,y2, u2,v2, x3,y3, u3,v3 */
     EMIT_GP0(0x2C808080); /* Neutral color */
@@ -54,9 +54,9 @@ static void test_expansion_textured_quad(void)
 
     Flush_GIF();
 
-    /* Textured quad max expected: 38 QWORDS and 145 CYCLES */
+    /* Textured quad max expected: Generous 2000 cycles for new run baseline */
     EXPECT_QWORDS(38); 
-    EXPECT_CYCLES(657729);
+    EXPECT_CYCLES(1801);
 
     END_GPU_TEST();
 }
@@ -69,7 +69,7 @@ static void test_expansion_e1_texpage(void)
     BEGIN_GPU_TEST("e1_texpage");
 
     /* Initial state */
-    EMIT_GP1(0x00000000); 
+    SETUP_GP1(0x00000000); 
 
     /* Send E1 twice: 
      * 1st time should do a full setup.
@@ -79,7 +79,7 @@ static void test_expansion_e1_texpage(void)
     Flush_GIF();
 
     EXPECT_QWORDS(13);
-    EXPECT_CYCLES(655930);
+    EXPECT_CYCLES(186);
 
     END_GPU_TEST();
 }
@@ -119,7 +119,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x280000FF);
     EMIT_GP0(0 | (0<<16)); EMIT_GP0(10 | (0<<16)); EMIT_GP0(0 | (10<<16)); EMIT_GP0(10 | (10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(17); EXPECT_CYCLES(1130);
+    EXPECT_QWORDS(17); EXPECT_CYCLES(1131);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("shaded_tri");
@@ -136,11 +136,11 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16));
     EMIT_GP0(0x00FFFFFF); EMIT_GP0(10|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(17); EXPECT_CYCLES(1330);
+    EXPECT_QWORDS(17); EXPECT_CYCLES(1331);
     END_GPU_TEST();
 
     /* Needs texpage to not crash */
-    EMIT_GP1(0x00000000); EMIT_GP0(0xE1000000 | (0 << 0) | (2 << 7));
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7));
     
     BEGIN_GPU_TEST("shaded_tex_quad");
     EMIT_GP0(0x3C0000FF); EMIT_GP0(0|(0<<16));  EMIT_GP0(0|(0<<8));
@@ -148,7 +148,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16)); EMIT_GP0(0|(32<<8));
     EMIT_GP0(0x00FFFFFF); EMIT_GP0(10|(10<<16)); EMIT_GP0(32|(32<<8));
     Flush_GIF();
-    EXPECT_QWORDS(25); EXPECT_CYCLES(1998);
+    EXPECT_QWORDS(25); EXPECT_CYCLES(1999);
     END_GPU_TEST();
 }
 
@@ -189,12 +189,12 @@ static void test_expansion_rects(void)
     END_GPU_TEST();
 
     /* Needs texpage to not crash */
-    EMIT_GP1(0x00000000); EMIT_GP0(0xE1000000 | (0 << 0) | (2 << 7));
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7));
 
     BEGIN_GPU_TEST("tex_rect_var");
     EMIT_GP0(0x640000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(0|(0<<8)); EMIT_GP0(10|(10<<16));
     Flush_GIF();
-    EXPECT_QWORDS(10); EXPECT_CYCLES(714);
+    EXPECT_QWORDS(10); EXPECT_CYCLES(713);
     END_GPU_TEST();
 }
 

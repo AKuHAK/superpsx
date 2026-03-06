@@ -127,6 +127,15 @@ void gp_reset_state(void);
     gp_ctx.eeinsns_used += _insns; \
 } while(0)
 
+/* Setup commands that bypass metrics accumulation */
+#define SETUP_GP0(word) do { \
+    GPU_WriteGP0((uint32_t)(word)); \
+} while(0)
+
+#define SETUP_GP1(word) do { \
+    GPU_WriteGP1((uint32_t)(word)); \
+} while(0)
+
 /* Validations */
 #define EXPECT_QWORDS(max_qwords) do { \
     uint32_t _got = gp_ctx.qwords_generated; \
@@ -167,5 +176,6 @@ void gp_reset_state(void);
  *  Test Runners
  * ================================================================ */
 void gp_run_expansion_tests(void);
+void gp_run_expansion_gp1_tests(void);
 
 #endif /* PLAYGROUND_GPU_H */

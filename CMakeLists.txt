@@ -290,6 +290,7 @@ add_custom_target(run-playground
 set(GPU_PLAYGROUND_SOURCES
     tests/playground_gpu/playground_main.c
     tests/playground_gpu/test_expansion_gpu.c
+    tests/playground_gpu/test_expansion_gp1.c
     tests/playground_gpu/mocks.c
     src/gpu_commands.c
     src/gpu_primitives.c

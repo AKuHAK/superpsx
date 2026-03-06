@@ -65,6 +65,7 @@ int main(void)
 
     /* Run tests */
     gp_run_expansion_tests();
+    gp_run_expansion_gp1_tests();
 
     printf("\n====================================================================\n");
     printf("Test Results: %d passed, %d failed (Total %d)\n",

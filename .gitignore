@@ -23,6 +23,7 @@ Thumbs.db
 test.exe
 tests/*
 !tests/jit/
+!tests/playground_gpu/
 isos/crash_pid*.txt
 
 # Analysis files (not tracked)

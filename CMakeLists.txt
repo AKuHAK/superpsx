@@ -285,6 +285,51 @@ add_custom_target(run-playground
 )
 
 # ============================================================================
+# GPU Playground — measure expansion of GPU commands
+# ============================================================================
+set(GPU_PLAYGROUND_SOURCES
+    tests/playground_gpu/playground_main.c
+    tests/playground_gpu/test_expansion_gpu.c
+    tests/playground_gpu/mocks.c
+    src/gpu_commands.c
+    src/gpu_primitives.c
+)
+
+add_executable(gpu_playground.elf EXCLUDE_FROM_ALL ${GPU_PLAYGROUND_SOURCES})
+
+target_include_directories(gpu_playground.elf PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests/gpu
+)
+
+target_compile_options(gpu_playground.elf PRIVATE -O2 -G0 -Wall)
+target_compile_definitions(gpu_playground.elf PRIVATE GPU_PLAYGROUND)
+
+target_link_libraries(gpu_playground.elf PRIVATE
+    -lpatches
+    -lps2_drivers
+    -ldebug
+)
+
+# Build PCSX2 command for running the GPU playground ELF
+set(PCSX2_GPU_PG_CMD "${PCSX2_PATH}")
+foreach(_f ${PCSX2_RUN_FLAGS})
+    list(APPEND PCSX2_GPU_PG_CMD "${_f}")
+endforeach()
+list(APPEND PCSX2_GPU_PG_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/gpu_playground.elf")
+string(REPLACE ";" "\\;" PCSX2_GPU_PG_CMD_ESC "${PCSX2_GPU_PG_CMD}")
+
+add_custom_target(run-gpu-playground
+    COMMAND ${CMAKE_COMMAND}
+        "-DPCSX2_CMD=${PCSX2_GPU_PG_CMD_ESC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/run_pcsx2.cmake"
+    DEPENDS gpu_playground.elf
+    COMMENT "Running GPU Playground in PCSX2"
+    VERBATIM
+)
+
+# ============================================================================
 # Print configuration summary
 # ============================================================================
 message(STATUS "")

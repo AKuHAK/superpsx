@@ -434,19 +434,990 @@ static void test_gte_nclip_mfc2_readback(void)
 
 
 /* ================================================================
+ * Test 11: AVSZ3 — Average of 3 Z values
+ *
+ * ZSF3=1365(≈4096/3), SZ1=1000, SZ2=2000, SZ3=3000
+ * MAC0 = ZSF3*(SZ1+SZ2+SZ3) = 1365*6000 = 8190000
+ * OTZ  = MAC0 / 4096 = 8190000>>12 = 1999
+ * FLAG = 0
+ * ================================================================ */
+static void test_gte_avsz3(void)
+{
+    BEGIN_TEST("gte_avsz3");
+    gte_enable_cop2();
+
+    cpu.cp2_ctrl[GTE_ZSF3] = 1365;
+    cpu.cp2_data[GTE_SZ1]  = 1000;
+    cpu.cp2_data[GTE_SZ2]  = 2000;
+    cpu.cp2_data[GTE_SZ3]  = 3000;
+    cpu.cp2_data[GTE_MAC0] = 0xDEADBEEF;
+    cpu.cp2_data[GTE_OTZ]  = 0xDEAD;
+
+    EMIT(GTE_CMD_AVSZ3);
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC0, 8190000);
+    EXPECT_CP2_DATA(GTE_OTZ, 1999);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 12: AVSZ4 — Average of 4 Z values
+ *
+ * ZSF4=1024(≈4096/4), SZ0=500, SZ1=1000, SZ2=1500, SZ3=2000
+ * MAC0 = ZSF4*(SZ0+SZ1+SZ2+SZ3) = 1024*5000 = 5120000
+ * OTZ  = 5120000>>12 = 1250
+ * FLAG = 0
+ * ================================================================ */
+static void test_gte_avsz4(void)
+{
+    BEGIN_TEST("gte_avsz4");
+    gte_enable_cop2();
+
+    cpu.cp2_ctrl[GTE_ZSF4] = 1024;
+    cpu.cp2_data[GTE_SZ0]  = 500;
+    cpu.cp2_data[GTE_SZ1]  = 1000;
+    cpu.cp2_data[GTE_SZ2]  = 1500;
+    cpu.cp2_data[GTE_SZ3]  = 2000;
+
+    EMIT(GTE_CMD_AVSZ4);
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC0, 5120000);
+    EXPECT_CP2_DATA(GTE_OTZ, 1250);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 13: OP — Outer Product (cross product of RT diag × IR)
+ *
+ * sf=1, lm=0
+ * D1=RT11=4096, D2=RT22=4096, D3=RT33=4096
+ * IR=(100, 200, 300)
+ * MAC1 = (D2*IR3 - D3*IR2) >> 12 = (4096*300-4096*200)>>12 = 100
+ * MAC2 = (D3*IR1 - D1*IR3) >> 12 = (4096*100-4096*300)>>12 = -200
+ * MAC3 = (D1*IR2 - D2*IR1) >> 12 = (4096*200-4096*100)>>12 = 100
+ * ================================================================ */
+static void test_gte_op(void)
+{
+    BEGIN_TEST("gte_op");
+    gte_enable_cop2();
+
+    /* Identity rotation matrix — diag = (4096, 4096, 4096) */
+    cpu.cp2_ctrl[GTE_RT11RT12] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_RT13RT21] = 0;
+    cpu.cp2_ctrl[GTE_RT22RT23] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_RT31RT32] = 0;
+    cpu.cp2_ctrl[GTE_RT33]     = 4096;
+
+    cpu.cp2_data[GTE_IR1] = 100;
+    cpu.cp2_data[GTE_IR2] = 200;
+    cpu.cp2_data[GTE_IR3] = 300;
+
+    EMIT(GTE_CMD_OP(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 100);
+    EXPECT_CP2_DATA(GTE_MAC2, (uint32_t)(int32_t)-200);
+    EXPECT_CP2_DATA(GTE_MAC3, 100);
+    EXPECT_CP2_DATA(GTE_IR1, 100);
+    EXPECT_CP2_DATA(GTE_IR2, (uint32_t)(int16_t)-200);
+    EXPECT_CP2_DATA(GTE_IR3, 100);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 14: SQR — Square of IR vector (sf=0, no shift)
+ *
+ * sf=0, lm=0: IR1-3 squared, no shift
+ * IR1=10, IR2=20, IR3=30
+ * MAC1 = 10*10 = 100, MAC2 = 20*20 = 400, MAC3 = 30*30 = 900
+ * IR1=100, IR2=400, IR3=900
+ * ================================================================ */
+static void test_gte_sqr_sf0(void)
+{
+    BEGIN_TEST("gte_sqr_sf0");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_IR1] = 10;
+    cpu.cp2_data[GTE_IR2] = 20;
+    cpu.cp2_data[GTE_IR3] = 30;
+
+    EMIT(GTE_CMD_SQR(0, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 100);
+    EXPECT_CP2_DATA(GTE_MAC2, 400);
+    EXPECT_CP2_DATA(GTE_MAC3, 900);
+    EXPECT_CP2_DATA(GTE_IR1, 100);
+    EXPECT_CP2_DATA(GTE_IR2, 400);
+    EXPECT_CP2_DATA(GTE_IR3, 900);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 15: SQR — Square of IR vector (sf=1, >>12 shift)
+ *
+ * sf=1, lm=0: IR1-3 squared then >>12
+ * IR1=100, IR2=200, IR3=300
+ * MAC1 = (100*100)>>12 = 10000>>12 = 2
+ * MAC2 = (200*200)>>12 = 40000>>12 = 9
+ * MAC3 = (300*300)>>12 = 90000>>12 = 21
+ * ================================================================ */
+static void test_gte_sqr_sf1(void)
+{
+    BEGIN_TEST("gte_sqr_sf1");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_IR1] = 100;
+    cpu.cp2_data[GTE_IR2] = 200;
+    cpu.cp2_data[GTE_IR3] = 300;
+
+    EMIT(GTE_CMD_SQR(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 2);
+    EXPECT_CP2_DATA(GTE_MAC2, 9);
+    EXPECT_CP2_DATA(GTE_MAC3, 21);
+    EXPECT_CP2_DATA(GTE_IR1, 2);
+    EXPECT_CP2_DATA(GTE_IR2, 9);
+    EXPECT_CP2_DATA(GTE_IR3, 21);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 16: GPF — General Purpose Interpolation (sf=1, lm=0)
+ *
+ * IR0=4096 (1.0), IR1=100, IR2=200, IR3=300
+ * MAC1 = (IR1*IR0)>>12 = (100*4096)>>12 = 100
+ * MAC2 = (IR2*IR0)>>12 = (200*4096)>>12 = 200
+ * MAC3 = (IR3*IR0)>>12 = (300*4096)>>12 = 300
+ * push_color: r=100>>4=6, g=200>>4=12, b=300>>4=18
+ * RGB2 = 6 | (12<<8) | (18<<16) | (code<<24)
+ *       with code=0 → 0x00120C06
+ * ================================================================ */
+static void test_gte_gpf(void)
+{
+    BEGIN_TEST("gte_gpf");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_IR0] = 0x1000;  /* 4096 = 1.0 in 1.3.12 */
+    cpu.cp2_data[GTE_IR1] = 100;
+    cpu.cp2_data[GTE_IR2] = 200;
+    cpu.cp2_data[GTE_IR3] = 300;
+    cpu.cp2_data[GTE_RGBC] = 0;      /* code=0 */
+    cpu.cp2_data[GTE_RGB0] = 0xAA;
+    cpu.cp2_data[GTE_RGB1] = 0xBB;
+    cpu.cp2_data[GTE_RGB2] = 0xCC;
+
+    EMIT(GTE_CMD_GPF(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 100);
+    EXPECT_CP2_DATA(GTE_MAC2, 200);
+    EXPECT_CP2_DATA(GTE_MAC3, 300);
+    EXPECT_CP2_DATA(GTE_IR1, 100);
+    EXPECT_CP2_DATA(GTE_IR2, 200);
+    EXPECT_CP2_DATA(GTE_IR3, 300);
+    /* RGB FIFO shift: RGB0←old_RGB1, RGB1←old_RGB2 */
+    EXPECT_CP2_DATA(GTE_RGB0, 0xBB);
+    EXPECT_CP2_DATA(GTE_RGB1, 0xCC);
+    /* RGB2 = new color */
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00120C06);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 17: GPL — General Purpose Interpolation with Base (sf=1, lm=0)
+ *
+ * IR0=4096 (1.0), IR1=100, IR2=200, IR3=300
+ * MAC1=10, MAC2=20, MAC3=30 (base values, get <<12)
+ * result1 = IR1*IR0 + MAC1<<12 = 100*4096 + 10*4096 = 450560
+ * MAC1 = 450560>>12 = 110
+ * result2 = IR2*IR0 + MAC2<<12 = 200*4096 + 20*4096 = 901120
+ * MAC2 = 901120>>12 = 220
+ * result3 = IR3*IR0 + MAC3<<12 = 300*4096 + 30*4096 = 1351680
+ * MAC3 = 1351680>>12 = 330
+ * push_color: r=110>>4=6, g=220>>4=13, b=330>>4=20
+ * RGB2 = 6 | (13<<8) | (20<<16) = 0x00140D06
+ * ================================================================ */
+static void test_gte_gpl(void)
+{
+    BEGIN_TEST("gte_gpl");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_IR0]  = 0x1000;
+    cpu.cp2_data[GTE_IR1]  = 100;
+    cpu.cp2_data[GTE_IR2]  = 200;
+    cpu.cp2_data[GTE_IR3]  = 300;
+    cpu.cp2_data[GTE_MAC1] = 10;
+    cpu.cp2_data[GTE_MAC2] = 20;
+    cpu.cp2_data[GTE_MAC3] = 30;
+    cpu.cp2_data[GTE_RGBC] = 0;
+    cpu.cp2_data[GTE_RGB0] = 0xAA;
+    cpu.cp2_data[GTE_RGB1] = 0xBB;
+    cpu.cp2_data[GTE_RGB2] = 0xCC;
+
+    EMIT(GTE_CMD_GPL(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 110);
+    EXPECT_CP2_DATA(GTE_MAC2, 220);
+    EXPECT_CP2_DATA(GTE_MAC3, 330);
+    EXPECT_CP2_DATA(GTE_IR1, 110);
+    EXPECT_CP2_DATA(GTE_IR2, 220);
+    EXPECT_CP2_DATA(GTE_IR3, 330);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00140D06);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 18: DPCS — Depth Cueing Single (sf=1, lm=0)
+ *
+ * RGBC = black (0,0,0), IR0 = 2048 (0.5×)
+ * RFC=GFC=BFC = 240
+ * acc = 0, fc = 240<<12 = 983040
+ * d = 983040, tmp_ir = 240
+ * result = 240*2048 + 0 = 491520
+ * MAC = 491520>>12 = 120, IR = 120
+ * color = 120>>4 = 7
+ * RGB2 = 0x00070707
+ * ================================================================ */
+static void test_gte_dpcs(void)
+{
+    BEGIN_TEST("gte_dpcs");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_RGBC] = 0x00000000;  /* black */
+    cpu.cp2_data[GTE_IR0]  = 0x800;       /* 2048 = 0.5 */
+    cpu.cp2_ctrl[GTE_RFC]  = 240;
+    cpu.cp2_ctrl[GTE_GFC]  = 240;
+    cpu.cp2_ctrl[GTE_BFC]  = 240;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_DPCS(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 120);
+    EXPECT_CP2_DATA(GTE_MAC2, 120);
+    EXPECT_CP2_DATA(GTE_MAC3, 120);
+    EXPECT_CP2_DATA(GTE_IR1, 120);
+    EXPECT_CP2_DATA(GTE_IR2, 120);
+    EXPECT_CP2_DATA(GTE_IR3, 120);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00070707);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 19: INTPL — Interpolation (sf=1, lm=0)
+ *
+ * IR0=2048 (0.5), IR1=100, IR2=200, IR3=300
+ * RFC=GFC=BFC=200
+ * acc = IR << 12 → (409600, 819200, 1228800)
+ * fc = 200<<12 = 819200
+ * d1 = 819200-409600 = 409600 → tmp_ir=100
+ * d2 = 819200-819200 = 0 → tmp_ir=0
+ * d3 = 819200-1228800 = -409600 → tmp_ir=-100
+ * r1 = 100*2048+409600=614400 → MAC1=150
+ * r2 = 0*2048+819200=819200 → MAC2=200
+ * r3 = -100*2048+1228800=1024000 → MAC3=250
+ * color: 9,12,15 → RGB2 = 0x000F0C09
+ * ================================================================ */
+static void test_gte_intpl(void)
+{
+    BEGIN_TEST("gte_intpl");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_IR0] = 0x800;
+    cpu.cp2_data[GTE_IR1] = 100;
+    cpu.cp2_data[GTE_IR2] = 200;
+    cpu.cp2_data[GTE_IR3] = 300;
+    cpu.cp2_ctrl[GTE_RFC] = 200;
+    cpu.cp2_ctrl[GTE_GFC] = 200;
+    cpu.cp2_ctrl[GTE_BFC] = 200;
+    cpu.cp2_data[GTE_RGBC] = 0;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_INTPL(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 150);
+    EXPECT_CP2_DATA(GTE_MAC2, 200);
+    EXPECT_CP2_DATA(GTE_MAC3, 250);
+    EXPECT_CP2_DATA(GTE_IR1, 150);
+    EXPECT_CP2_DATA(GTE_IR2, 200);
+    EXPECT_CP2_DATA(GTE_IR3, 250);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x000F0C09);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 20: DCPL — Depth Cue Color Light (sf=1, lm=0)
+ *
+ * RGBC: R=32, G=64, B=128 → 0x00804020
+ * IR0=2048, IR1=IR2=IR3=256
+ * RFC=GFC=BFC=200
+ * acc1=(32*256)<<4=131072, acc2=(64*256)<<4=262144,
+ * acc3=(128*256)<<4=524288
+ * fc=200<<12=819200
+ * d1=688128→tmp=168, d2=557056→tmp=136, d3=294912→tmp=72
+ * r1=168*2048+131072=475136→MAC1=116
+ * r2=136*2048+262144=540672→MAC2=132
+ * r3=72*2048+524288=671744→MAC3=164
+ * color: 7,8,10 → RGB2=0x000A0807
+ * ================================================================ */
+static void test_gte_dcpl(void)
+{
+    BEGIN_TEST("gte_dcpl");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_RGBC] = 0x00804020;  /* R=32, G=64, B=128 */
+    cpu.cp2_data[GTE_IR0]  = 0x800;
+    cpu.cp2_data[GTE_IR1]  = 256;
+    cpu.cp2_data[GTE_IR2]  = 256;
+    cpu.cp2_data[GTE_IR3]  = 256;
+    cpu.cp2_ctrl[GTE_RFC]  = 200;
+    cpu.cp2_ctrl[GTE_GFC]  = 200;
+    cpu.cp2_ctrl[GTE_BFC]  = 200;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_DCPL(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 116);
+    EXPECT_CP2_DATA(GTE_MAC2, 132);
+    EXPECT_CP2_DATA(GTE_MAC3, 164);
+    EXPECT_CP2_DATA(GTE_IR1, 116);
+    EXPECT_CP2_DATA(GTE_IR2, 132);
+    EXPECT_CP2_DATA(GTE_IR3, 164);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x000A0807);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 21: DPCT — Depth Cueing Triple (sf=1, lm=0)
+ *
+ * All RGB FIFO entries = black (0,0,0)
+ * IR0=2048, RFC=GFC=BFC=240
+ * Each iteration: acc=0, fc=983040, d=983040, tmp_ir=240
+ * result=240*2048=491520→MAC=120→IR=120, color=7→0x00070707
+ * After 3 iterations: all RGB FIFO = 0x00070707
+ * ================================================================ */
+static void test_gte_dpct(void)
+{
+    BEGIN_TEST("gte_dpct");
+    gte_enable_cop2();
+
+    cpu.cp2_data[GTE_RGB0] = 0x00000000;
+    cpu.cp2_data[GTE_RGB1] = 0x00000000;
+    cpu.cp2_data[GTE_RGB2] = 0x00000000;
+    cpu.cp2_data[GTE_IR0]  = 0x800;
+    cpu.cp2_ctrl[GTE_RFC]  = 240;
+    cpu.cp2_ctrl[GTE_GFC]  = 240;
+    cpu.cp2_ctrl[GTE_BFC]  = 240;
+    cpu.cp2_data[GTE_RGBC] = 0;
+
+    EMIT(GTE_CMD_DPCT(1, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 120);
+    EXPECT_CP2_DATA(GTE_MAC2, 120);
+    EXPECT_CP2_DATA(GTE_MAC3, 120);
+    EXPECT_CP2_DATA(GTE_RGB0, 0x00070707);
+    EXPECT_CP2_DATA(GTE_RGB1, 0x00070707);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00070707);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ---- Helper: set identity Light matrix ---- */
+static void gte_set_identity_light(void)
+{
+    cpu.cp2_ctrl[GTE_L11L12] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_L13L21] = 0;
+    cpu.cp2_ctrl[GTE_L22L23] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_L31L32] = 0;
+    cpu.cp2_ctrl[GTE_L33]    = 4096;
+}
+
+/* ---- Helper: set identity Color matrix ---- */
+static void gte_set_identity_color(void)
+{
+    cpu.cp2_ctrl[GTE_LR1LR2] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_LR3LG1] = 0;
+    cpu.cp2_ctrl[GTE_LG2LG3] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_LB1LB2] = 0;
+    cpu.cp2_ctrl[GTE_LB3]    = 4096;
+}
+
+/* ---- Helper: set zero background color ---- */
+static void gte_set_zero_bk(void)
+{
+    cpu.cp2_ctrl[GTE_RBK] = 0;
+    cpu.cp2_ctrl[GTE_GBK] = 0;
+    cpu.cp2_ctrl[GTE_BBK] = 0;
+}
+
+
+/* ================================================================
+ * Test 22: MVMVA — Matrix-Vector Multiply Add
+ *         (sf=1, lm=0, mx=0/RT, v=0/V0, cv=0/TR)
+ *
+ * Identity RT, TR=(100,200,300), V0=(10,20,30)
+ * m1 = (100<<12) + 4096*10 = 409600+40960 = 450560
+ * MAC1 = 450560>>12 = 110
+ * m2 = (200<<12) + 4096*20 = 819200+81920 = 901120
+ * MAC2 = 901120>>12 = 220
+ * m3 = (300<<12) + 4096*30 = 1228800+122880 = 1351680
+ * MAC3 = 1351680>>12 = 330
+ * ================================================================ */
+static void test_gte_mvmva(void)
+{
+    BEGIN_TEST("gte_mvmva");
+    gte_enable_cop2();
+
+    /* Identity RT */
+    cpu.cp2_ctrl[GTE_RT11RT12] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_RT13RT21] = 0;
+    cpu.cp2_ctrl[GTE_RT22RT23] = (0 << 16) | (4096 & 0xFFFF);
+    cpu.cp2_ctrl[GTE_RT31RT32] = 0;
+    cpu.cp2_ctrl[GTE_RT33]     = 4096;
+    cpu.cp2_ctrl[GTE_TRX] = 100;
+    cpu.cp2_ctrl[GTE_TRY] = 200;
+    cpu.cp2_ctrl[GTE_TRZ] = 300;
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(10, 20);
+    cpu.cp2_data[GTE_VZ0]  = 30;
+
+    /* MVMVA: sf=1, lm=0, mx=0(RT), v=0(V0), cv=0(TR) */
+    EMIT(GTE_CMD_MVMVA(1, 0, 0, 0, 0));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 110);
+    EXPECT_CP2_DATA(GTE_MAC2, 220);
+    EXPECT_CP2_DATA(GTE_MAC3, 330);
+    EXPECT_CP2_DATA(GTE_IR1, 110);
+    EXPECT_CP2_DATA(GTE_IR2, 220);
+    EXPECT_CP2_DATA(GTE_IR3, 330);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 23: NCS — Normal Color Single (sf=1, lm=1)
+ *
+ * Identity Light, identity Color, BK=(0,0,0)
+ * V0 = (1000,1000,1000), RGBC code=0x80
+ *
+ * Step 1: L×V0 → IR=(1000,1000,1000)
+ * Step 2: BK + C×IR → IR=(1000,1000,1000)
+ * push_color: r=g=b=1000>>4=62, code=0x80
+ * RGB2 = 62|(62<<8)|(62<<16)|(0x80<<24) = 0x803E3E3E
+ * ================================================================ */
+static void test_gte_ncs(void)
+{
+    BEGIN_TEST("gte_ncs");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x80000000;  /* code=0x80 */
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCS(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 1000);
+    EXPECT_CP2_DATA(GTE_MAC2, 1000);
+    EXPECT_CP2_DATA(GTE_MAC3, 1000);
+    EXPECT_CP2_DATA(GTE_IR1, 1000);
+    EXPECT_CP2_DATA(GTE_IR2, 1000);
+    EXPECT_CP2_DATA(GTE_IR3, 1000);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x803E3E3E);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 24: NCCS — Normal Color Color Single (sf=1, lm=1)
+ *
+ * Same setup as NCS but with RGBC=(128,128,128)
+ * Step 1-2: IR=(1000,1000,1000) same as NCS
+ * Step 3: MAC = (128*1000)<<4 = 2048000
+ * MAC>>12 = 500, IR=500
+ * color = 500>>4 = 31
+ * RGB2 = 31|(31<<8)|(31<<16) = 0x001F1F1F
+ * ================================================================ */
+static void test_gte_nccs(void)
+{
+    BEGIN_TEST("gte_nccs");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;  /* R=128, G=128, B=128 */
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCCS(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 500);
+    EXPECT_CP2_DATA(GTE_MAC2, 500);
+    EXPECT_CP2_DATA(GTE_MAC3, 500);
+    EXPECT_CP2_DATA(GTE_IR1, 500);
+    EXPECT_CP2_DATA(GTE_IR2, 500);
+    EXPECT_CP2_DATA(GTE_IR3, 500);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x001F1F1F);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 25: CC — Color Color (sf=1, lm=1)
+ *
+ * Identity Color, BK=0, RGBC=(128,128,128)
+ * IR1=IR2=IR3=1000 (pre-set lighting result)
+ * Step 1: C×IR + BK → IR stays 1000
+ * Step 2: MAC = (128*1000)<<4 = 2048000>>12 = 500
+ * RGB2 = 0x001F1F1F
+ * ================================================================ */
+static void test_gte_cc(void)
+{
+    BEGIN_TEST("gte_cc");
+    gte_enable_cop2();
+
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_IR1]  = 1000;
+    cpu.cp2_data[GTE_IR2]  = 1000;
+    cpu.cp2_data[GTE_IR3]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_CC(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 500);
+    EXPECT_CP2_DATA(GTE_MAC2, 500);
+    EXPECT_CP2_DATA(GTE_MAC3, 500);
+    EXPECT_CP2_DATA(GTE_IR1, 500);
+    EXPECT_CP2_DATA(GTE_IR2, 500);
+    EXPECT_CP2_DATA(GTE_IR3, 500);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x001F1F1F);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 26: NCDS — Normal Color Depth Cue Single (sf=1, lm=1)
+ *
+ * Identity Light, identity Color, BK=0
+ * V0=(1000,1000,1000), RGBC=(128,128,128), IR0=2048, FC=(200,200,200)
+ *
+ * Step 1: L×V0 → IR=(1000,1000,1000)
+ * Step 2: C×IR+BK → IR=(1000,1000,1000)
+ * Step 3: acc = (128*1000)<<4 = 2048000; MAC>>12=500 (intermediate)
+ *         But actually step 3 is:
+ *         acc = (RGBC.ch × IR_ch) << 4 → same 2048000
+ * Step 4: interpolate toward FC:
+ *         fc=200<<12=819200, d=819200-2048000=-1228800
+ *         tmp_ir=-1228800>>12=-300 (clamped, but with lm=0 for intermediate)
+ *         result = -300*2048+2048000=1433600
+ *         MAC = 1433600>>12=350, IR=350
+ * color = 350>>4=21
+ * RGB2 = 21|(21<<8)|(21<<16) = 0x00151515
+ * ================================================================ */
+static void test_gte_ncds(void)
+{
+    BEGIN_TEST("gte_ncds");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;
+    cpu.cp2_data[GTE_IR0]  = 0x800;  /* 2048 */
+    cpu.cp2_ctrl[GTE_RFC]  = 200;
+    cpu.cp2_ctrl[GTE_GFC]  = 200;
+    cpu.cp2_ctrl[GTE_BFC]  = 200;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCDS(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 350);
+    EXPECT_CP2_DATA(GTE_MAC2, 350);
+    EXPECT_CP2_DATA(GTE_MAC3, 350);
+    EXPECT_CP2_DATA(GTE_IR1, 350);
+    EXPECT_CP2_DATA(GTE_IR2, 350);
+    EXPECT_CP2_DATA(GTE_IR3, 350);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00151515);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 27: CDP — Color Depth Cue (sf=1, lm=1)
+ *
+ * Like CC + depth cue interpolation.
+ * Identity Color, BK=0, RGBC=(128,128,128)
+ * IR1=IR2=IR3=1000, IR0=2048, FC=(200,200,200)
+ *
+ * Step 1: C×IR + BK → IR=1000
+ * Step 2: acc=(128*1000)<<4=2048000 → MAC>>12=500
+ * Step 3: interpolate: fc=819200, d=819200-2048000=-1228800
+ *         tmp=-300, result=-300*2048+2048000=1433600
+ *         MAC=350, IR=350
+ * RGB2 = 0x00151515
+ * ================================================================ */
+static void test_gte_cdp(void)
+{
+    BEGIN_TEST("gte_cdp");
+    gte_enable_cop2();
+
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_IR1]  = 1000;
+    cpu.cp2_data[GTE_IR2]  = 1000;
+    cpu.cp2_data[GTE_IR3]  = 1000;
+    cpu.cp2_data[GTE_IR0]  = 0x800;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;
+    cpu.cp2_ctrl[GTE_RFC]  = 200;
+    cpu.cp2_ctrl[GTE_GFC]  = 200;
+    cpu.cp2_ctrl[GTE_BFC]  = 200;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_CDP(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 350);
+    EXPECT_CP2_DATA(GTE_MAC2, 350);
+    EXPECT_CP2_DATA(GTE_MAC3, 350);
+    EXPECT_CP2_DATA(GTE_IR1, 350);
+    EXPECT_CP2_DATA(GTE_IR2, 350);
+    EXPECT_CP2_DATA(GTE_IR3, 350);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00151515);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 28: NCT — Normal Color Triple (sf=1, lm=1)
+ *
+ * Same as NCS but for 3 vertices.  Uses V0, V1, V2.
+ * All set to (1000,1000,1000). Final result from V2.
+ * Expected: same as NCS → RGB2 = 0x803E3E3E
+ * ================================================================ */
+static void test_gte_nct(void)
+{
+    BEGIN_TEST("gte_nct");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_VXY1] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ1]  = 1000;
+    cpu.cp2_data[GTE_VXY2] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ2]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x80000000;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCT(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 1000);
+    EXPECT_CP2_DATA(GTE_MAC2, 1000);
+    EXPECT_CP2_DATA(GTE_MAC3, 1000);
+    /* RGB FIFO should have 3 entries from 3 iterations */
+    EXPECT_CP2_DATA(GTE_RGB2, 0x803E3E3E);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 29: NCCT — Normal Color Color Triple (sf=1, lm=1)
+ *
+ * Same as NCCS but for 3 vertices. All same → RGB2 = 0x001F1F1F
+ * ================================================================ */
+static void test_gte_ncct(void)
+{
+    BEGIN_TEST("gte_ncct");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_VXY1] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ1]  = 1000;
+    cpu.cp2_data[GTE_VXY2] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ2]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCCT(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 500);
+    EXPECT_CP2_DATA(GTE_MAC2, 500);
+    EXPECT_CP2_DATA(GTE_MAC3, 500);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x001F1F1F);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 30: NCDT — Normal Color Depth Cue Triple (sf=1, lm=1)
+ *
+ * Same as NCDS but for 3 vertices.
+ * Expected: same as NCDS → MAC=350, RGB2=0x00151515
+ * ================================================================ */
+static void test_gte_ncdt(void)
+{
+    BEGIN_TEST("gte_ncdt");
+    gte_enable_cop2();
+
+    gte_set_identity_light();
+    gte_set_identity_color();
+    gte_set_zero_bk();
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ0]  = 1000;
+    cpu.cp2_data[GTE_VXY1] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ1]  = 1000;
+    cpu.cp2_data[GTE_VXY2] = PACK_VXY(1000, 1000);
+    cpu.cp2_data[GTE_VZ2]  = 1000;
+    cpu.cp2_data[GTE_RGBC] = 0x00808080;
+    cpu.cp2_data[GTE_IR0]  = 0x800;
+    cpu.cp2_ctrl[GTE_RFC]  = 200;
+    cpu.cp2_ctrl[GTE_GFC]  = 200;
+    cpu.cp2_ctrl[GTE_BFC]  = 200;
+    cpu.cp2_data[GTE_RGB0] = 0;
+    cpu.cp2_data[GTE_RGB1] = 0;
+    cpu.cp2_data[GTE_RGB2] = 0;
+
+    EMIT(GTE_CMD_NCDT(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC1, 350);
+    EXPECT_CP2_DATA(GTE_MAC2, 350);
+    EXPECT_CP2_DATA(GTE_MAC3, 350);
+    EXPECT_CP2_DATA(GTE_RGB2, 0x00151515);
+    EXPECT_CP2_CTRL(GTE_FLAG_CTRL, 0);
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 31: RTPS — Perspective Transform Single (sf=1, lm=1)
+ *
+ * Identity RT, TR=(0,0,200), V0=(0,0,0)
+ * OFX=160<<16, OFY=120<<16, H=100, DQA=0, DQB=0
+ * MAC1=0, MAC2=0, MAC3=200
+ * SZ3=200
+ * SX2 = (div × 0 + OFX)>>16 = 160
+ * SY2 = (div × 0 + OFY)>>16 = 120
+ * Screen center for vertex at camera center
+ * ================================================================ */
+static void test_gte_rtps_center(void)
+{
+    BEGIN_TEST("gte_rtps_center");
+    gte_enable_cop2();
+    gte_set_identity();  /* identity RT, TR=(0,0,0) */
+
+    /* Override TRZ for depth */
+    cpu.cp2_ctrl[GTE_TRZ] = 200;
+    cpu.cp2_ctrl[GTE_OFX] = 160 << 16;
+    cpu.cp2_ctrl[GTE_OFY] = 120 << 16;
+    cpu.cp2_ctrl[GTE_H]   = 100;
+    cpu.cp2_ctrl[GTE_DQA] = 0;
+    cpu.cp2_ctrl[GTE_DQB] = 0;
+
+    cpu.cp2_data[GTE_VXY0] = PACK_VXY(0, 0);
+    cpu.cp2_data[GTE_VZ0]  = 0;
+
+    EMIT(GTE_CMD_RTPS(1, 1));
+
+    RUN(200);
+
+    EXPECT_CP2_DATA(GTE_MAC3, 200);
+    EXPECT_CP2_DATA(GTE_SZ3, 200);
+    /* Screen center should be (160, 120) */
+    EXPECT_CP2_DATA(GTE_SXY2, PACK_SXY(160, 120));
+    END_TEST();
+}
+
+
+/* ================================================================
+ * Test 32: RTPT — Perspective Transform Triple (sf=1, lm=1)
+ *
+ * Same setup as RTPS but tests all 3 vertices.
+ * V0=V1=V2=(0,0,0), TRZ=200.  All should project to screen center.
+ * ================================================================ */
+static void test_gte_rtpt(void)
+{
+    BEGIN_TEST("gte_rtpt");
+    gte_enable_cop2();
+    gte_set_identity();
+
+    cpu.cp2_ctrl[GTE_TRZ] = 200;
+    cpu.cp2_ctrl[GTE_OFX] = 160 << 16;
+    cpu.cp2_ctrl[GTE_OFY] = 120 << 16;
+    cpu.cp2_ctrl[GTE_H]   = 100;
+    cpu.cp2_ctrl[GTE_DQA] = 0;
+    cpu.cp2_ctrl[GTE_DQB] = 0;
+
+    cpu.cp2_data[GTE_VXY0] = 0;
+    cpu.cp2_data[GTE_VZ0]  = 0;
+    cpu.cp2_data[GTE_VXY1] = 0;
+    cpu.cp2_data[GTE_VZ1]  = 0;
+    cpu.cp2_data[GTE_VXY2] = 0;
+    cpu.cp2_data[GTE_VZ2]  = 0;
+
+    EMIT(GTE_CMD_RTPT(1, 1));
+
+    RUN(300);
+
+    /* Final SXY2 from V2 should be screen center */
+    EXPECT_CP2_DATA(GTE_SXY2, PACK_SXY(160, 120));
+    EXPECT_CP2_DATA(GTE_SZ3, 200);
+    END_TEST();
+}
+
+
+/* ================================================================
  *  Category runner
  * ================================================================ */
 void pg_run_gte_tests(void)
 {
     printf("--- GTE Tests ---\n");
+    /* Original dirty-tracking / COP2 tests (1-5) */
     test_gte_mtc2_mfc2_roundtrip();
     test_gte_preserves_slots();
     test_gte_mfc2_then_sw();
     test_gte_multi_call();
     test_gte_cu2_dirty_mask_regression();
+    /* NCLIP tests (6-10) */
     test_gte_nclip_positive();
     test_gte_nclip_negative();
     test_gte_nclip_zero();
     test_gte_nclip_negcoords();
     test_gte_nclip_mfc2_readback();
+    /* Z average (11-12) */
+    test_gte_avsz3();
+    test_gte_avsz4();
+    /* Simple vector ops (13-15) */
+    test_gte_op();
+    test_gte_sqr_sf0();
+    test_gte_sqr_sf1();
+    /* Interpolation (16-17) */
+    test_gte_gpf();
+    test_gte_gpl();
+    /* Depth cueing (18-21) */
+    test_gte_dpcs();
+    test_gte_intpl();
+    test_gte_dcpl();
+    test_gte_dpct();
+    /* Matrix ops (22) */
+    test_gte_mvmva();
+    /* Normal color (23-30) */
+    test_gte_ncs();
+    test_gte_nccs();
+    test_gte_cc();
+    test_gte_ncds();
+    test_gte_cdp();
+    test_gte_nct();
+    test_gte_ncct();
+    test_gte_ncdt();
+    /* Perspective transform (31-32) */
+    test_gte_rtps_center();
+    test_gte_rtpt();
 }

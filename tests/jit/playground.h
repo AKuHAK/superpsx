@@ -155,15 +155,43 @@
 #define PSX_COP2(func) ((0x12u << 26) | (1u << 25) | ((func) & 0x01FFFFFFu))
 
 /* Common GTE commands (encoding: sf=bit19, lm=bit10, cmd=lower 6 bits) */
-#define GTE_CMD_RTPS(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x01)
-#define GTE_CMD_NCLIP         PSX_COP2(0x06)
-#define GTE_CMD_AVSZ3         PSX_COP2(0x2D)
-#define GTE_CMD_AVSZ4         PSX_COP2(0x2E)
-#define GTE_CMD_RTPT(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x30)
+#define GTE_CMD_RTPS(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x01)
+#define GTE_CMD_NCLIP          PSX_COP2(0x06)
+#define GTE_CMD_OP(sf,lm)     PSX_COP2(((sf)<<19)|((lm)<<10)|0x0C)
+#define GTE_CMD_DPCS(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x10)
+#define GTE_CMD_INTPL(sf,lm)  PSX_COP2(((sf)<<19)|((lm)<<10)|0x11)
+#define GTE_CMD_MVMVA(sf,lm,mx,v,cv) \
+    PSX_COP2(((sf)<<19)|((mx)<<17)|((v)<<15)|((cv)<<13)|((lm)<<10)|0x12)
+#define GTE_CMD_NCDS(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x13)
+#define GTE_CMD_CDP(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x14)
+#define GTE_CMD_NCDT(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x16)
+#define GTE_CMD_NCCS(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x1B)
+#define GTE_CMD_CC(sf,lm)     PSX_COP2(((sf)<<19)|((lm)<<10)|0x1C)
+#define GTE_CMD_NCS(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x1E)
+#define GTE_CMD_NCT(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x20)
+#define GTE_CMD_SQR(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x28)
+#define GTE_CMD_DCPL(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x29)
+#define GTE_CMD_DPCT(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x2A)
+#define GTE_CMD_AVSZ3          PSX_COP2(0x2D)
+#define GTE_CMD_AVSZ4          PSX_COP2(0x2E)
+#define GTE_CMD_RTPT(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x30)
+#define GTE_CMD_GPF(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x3D)
+#define GTE_CMD_GPL(sf,lm)    PSX_COP2(((sf)<<19)|((lm)<<10)|0x3E)
+#define GTE_CMD_NCCT(sf,lm)   PSX_COP2(((sf)<<19)|((lm)<<10)|0x3F)
 
 /* GTE data register indices */
 #define GTE_VXY0 0   /* V0 vector X,Y (packed: lo=X, hi=Y) */
 #define GTE_VZ0  1   /* V0 vector Z */
+#define GTE_VXY1 2   /* V1 vector X,Y */
+#define GTE_VZ1  3   /* V1 vector Z */
+#define GTE_VXY2 4   /* V2 vector X,Y */
+#define GTE_VZ2  5   /* V2 vector Z */
+#define GTE_RGBC 6   /* Color + code byte (R=lo, G, B, code=hi) */
+#define GTE_OTZ  7   /* Average Z value */
+#define GTE_IR0  8   /* Interpolation factor (1.3.12 fixed) */
+#define GTE_IR1  9   /* Vector IR 1 */
+#define GTE_IR2  10  /* Vector IR 2 */
+#define GTE_IR3  11  /* Vector IR 3 */
 #define GTE_SXY0 12  /* Screen X,Y pair 0 */
 #define GTE_SXY1 13  /* Screen X,Y pair 1 */
 #define GTE_SXY2 14  /* Screen X,Y pair 2 (most recent RTPS result) */
@@ -172,7 +200,9 @@
 #define GTE_SZ1  17
 #define GTE_SZ2  18
 #define GTE_SZ3  19
-#define GTE_OTZ  7   /* Average Z value */
+#define GTE_RGB0 20  /* Color FIFO 0 (R, G, B, code) */
+#define GTE_RGB1 21  /* Color FIFO 1 */
+#define GTE_RGB2 22  /* Color FIFO 2 (most recent) */
 #define GTE_MAC0 24  /* MAC0 (NCLIP result, AVSZ result, etc.) */
 #define GTE_MAC1 25
 #define GTE_MAC2 26
@@ -188,6 +218,22 @@
 #define GTE_TRX      5  /* Translation X */
 #define GTE_TRY      6
 #define GTE_TRZ      7
+#define GTE_L11L12   8  /* Light matrix */
+#define GTE_L13L21   9
+#define GTE_L22L23  10
+#define GTE_L31L32  11
+#define GTE_L33     12
+#define GTE_RBK     13  /* Background color R */
+#define GTE_GBK     14  /* Background color G */
+#define GTE_BBK     15  /* Background color B */
+#define GTE_LR1LR2  16 /* Light color matrix */
+#define GTE_LR3LG1  17
+#define GTE_LG2LG3  18
+#define GTE_LB1LB2  19
+#define GTE_LB3     20
+#define GTE_RFC     21  /* Far color R */
+#define GTE_GFC     22  /* Far color G */
+#define GTE_BFC     23  /* Far color B */
 #define GTE_OFX     24  /* Screen offset X (fixed 16.16) */
 #define GTE_OFY     25  /* Screen offset Y (fixed 16.16) */
 #define GTE_H       26  /* Projection plane distance */
@@ -414,6 +460,8 @@ extern PGTestCtx pg_ctx;
 
 /* Pack signed 16-bit X,Y into SXY register format */
 #define PACK_SXY(x, y)  ((uint32_t)((((y) & 0xFFFF) << 16) | ((x) & 0xFFFF)))
+/* Pack signed 16-bit X,Y into VXY register format (same layout) */
+#define PACK_VXY(x, y)  PACK_SXY((x), (y))
 
 /* ================================================================
  *  Test category runners (one per file)

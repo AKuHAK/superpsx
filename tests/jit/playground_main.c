@@ -158,8 +158,7 @@ void pg_reset_jit_cache(void)
         jit_ht[i].native[1] = NULL;
     }
 
-    FlushCache(0);
-    FlushCache(2);
+    jit_flush_pending = 1;  /* Deferred: will flush before next block execution */
 }
 
 int pg_dump_next_block = 0; /* set to 1 to dump next compiled block */
@@ -198,6 +197,13 @@ void pg_run_jit(uint32_t pc, int32_t cycles)
                 printf("  [%3d] 0x%08X\n", i, block[i]);
             }
             pg_dump_next_block = 0;
+        }
+
+        /* Flush caches if any blocks were compiled since last execution */
+        if (jit_flush_pending) {
+            FlushCache(0);
+            FlushCache(2);
+            jit_flush_pending = 0;
         }
 
         int32_t remaining = ((block_func_t)block)(&cpu, psx_ram, psx_bios, cpu.cycles_left);

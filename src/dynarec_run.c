@@ -741,8 +741,7 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
             be = lookup_block(pc);
             apply_pending_patches(pc, block);
             jit_ht_add(pc, block);
-            FlushCache(0);
-            FlushCache(2);
+            jit_flush_pending = 1;  /* Deferred: batch with buffer-reset / SMC recompile */
         }
     }
 
@@ -844,6 +843,17 @@ static inline int run_jit_chain(uint64_t deadline)
 
     cpu.initial_cycles_left = cycles_left;
     cpu.cycles_left = cycles_left;
+
+    /* Batch FlushCache: flush D-cache + invalidate I-cache once before
+     * executing any recently compiled/patched code.  This batches the
+     * buffer-reset flush with the first compile, and deduplicates
+     * flushes when SMC triggers a recompile in the same chain call. */
+    if (__builtin_expect(jit_flush_pending, 0))
+    {
+        FlushCache(0);
+        FlushCache(2);
+        jit_flush_pending = 0;
+    }
 
     psx_block_exception = 1;
     PROF_PUSH(PROF_JIT_EXEC);

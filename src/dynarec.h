@@ -270,6 +270,7 @@ static inline void jit_ht_remove(uint32_t psx_pc)
  *  Shared state — compile-time
  * ================================================================ */
 extern uint32_t blocks_compiled;
+extern int jit_flush_pending;            /* 1 = D/I-cache needs flush before execution */
 extern uint32_t total_instructions;
 extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;

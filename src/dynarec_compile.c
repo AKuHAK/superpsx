@@ -10,6 +10,7 @@
 
 /* ---- Compile-time state ---- */
 uint32_t blocks_compiled = 0;
+int jit_flush_pending = 0;
 uint32_t total_instructions = 0;
 uint32_t block_cycle_count = 0;
 uint32_t emit_cycle_offset = 0;
@@ -807,9 +808,8 @@ uint32_t *compile_block(uint32_t psx_pc)
             jit_ht[i].native[0] = NULL;
             jit_ht[i].native[1] = NULL;
         }
-        /* Full flush on buffer reset: all old icache lines are stale */
-        FlushCache(0);
-        FlushCache(2);
+        /* Full flush deferred: batch with next compile's flush */
+        jit_flush_pending = 1;
     }
 
     uint32_t *block_start = code_ptr;

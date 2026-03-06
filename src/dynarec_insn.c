@@ -270,59 +270,49 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_SW(REG_T8, CPU_HI, REG_S0);
             reg_cache_invalidate();
             break;
-        case 0x1A: /* DIV — inline with div-by-zero handling */
+        case 0x1A: /* DIV — branchless with MOVZ div-by-zero fixup */
         {
-            emit_load_psx_reg(REG_T8, rs);
-            emit_load_psx_reg(REG_T9, rt);
-            /* Branch over division if divisor == 0 */
-            EMIT_BEQ(REG_T9, REG_ZERO, 7); /* skip 7 insns to @divz */
-            EMIT_NOP();
-            /* Common path: native signed divide */
-            emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x1A)); /* div t8, t9 */
-            emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));      /* mflo t8 */
-            emit(MK_R(0, 0, 0, REG_T9, 0, 0x10));      /* mfhi t9 */
+            int s1 = emit_use_reg(rs, REG_T8);  /* s1 = EE reg holding rs */
+            int s2 = emit_use_reg(rt, REG_T9);  /* s2 = EE reg holding rt (divisor) */
+            emit(MK_R(0, s1, s2, 0, 0, 0x1A));  /* div s1, s2 */
+            /* Fill div latency: compute divz lo = (rs>=0)?-1:1 */
+            emit(MK_R(0, 0, s1, REG_AT, 31, 0x03));           /* sra  AT, s1, 31  */
+            emit(MK_R(0, 0, REG_AT, REG_AT, 1, 0x00));        /* sll  AT, AT, 1   */
+            emit(MK_R(0, REG_AT, REG_ZERO, REG_AT, 0, 0x27)); /* nor  AT, AT, $0  */
+            /* AT = divz lo result, s2 still valid (never clobbered) */
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));  /* mflo T8 = quotient */
+            EMIT_MOVZ(REG_T8, REG_AT, s2);          /* if s2==0: T8 = divz lo */
             EMIT_SW(REG_T8, CPU_LO, REG_S0);
-            uint32_t *b_end_div = code_ptr;
-            emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T9, CPU_HI, REG_S0);      /* delay slot */
-            /* @divz: lo = (rs >= 0) ? -1 : 1, hi = rs */
-            EMIT_SW(REG_T8, CPU_HI, REG_S0);                  /* hi = rs (T0 still has rs) */
-            emit(MK_R(0, 0, REG_T8, REG_T9, 31, 0x03));       /* sra t1, t0, 31 */
-            emit(MK_R(0, 0, REG_T9, REG_T9, 1, 0x00));        /* sll t1, t1, 1  */
-            emit(MK_R(0, REG_T9, REG_ZERO, REG_T9, 0, 0x27)); /* nor t1, t1, zero */
-            EMIT_SW(REG_T9, CPU_LO, REG_S0);                  /* lo = result */
-            /* @end: patch the branch */
-            {
-                int32_t off = (int32_t)(code_ptr - b_end_div - 1);
-                *b_end_div = (*b_end_div & 0xFFFF0000) | (off & 0xFFFF);
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));  /* mfhi T8 = remainder */
+            /* divz hi = rs: reload if s1 was clobbered by mflo */
+            if (s1 == REG_T8) {
+                EMIT_LW(REG_AT, CPU_REG(rs), REG_S0);
+                EMIT_MOVZ(REG_T8, REG_AT, s2);
+            } else {
+                EMIT_MOVZ(REG_T8, s1, s2);
             }
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);
             reg_cache_invalidate();
             break;
         }
-        case 0x1B: /* DIVU — inline with div-by-zero handling */
+        case 0x1B: /* DIVU — branchless with MOVZ div-by-zero fixup */
         {
-            emit_load_psx_reg(REG_T8, rs);
-            emit_load_psx_reg(REG_T9, rt);
-            /* Branch over division if divisor == 0 */
-            EMIT_BEQ(REG_T9, REG_ZERO, 7); /* skip 7 insns to @divz */
-            EMIT_NOP();
-            /* Common path: native unsigned divide */
-            emit(MK_R(0, REG_T8, REG_T9, 0, 0, 0x1B)); /* divu t8, t9 */
-            emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));      /* mflo t8 */
-            emit(MK_R(0, 0, 0, REG_T9, 0, 0x10));      /* mfhi t9 */
+            int s1 = emit_use_reg(rs, REG_T8);  /* s1 = EE reg holding rs */
+            int s2 = emit_use_reg(rt, REG_T9);  /* s2 = EE reg holding rt (divisor) */
+            emit(MK_R(0, s1, s2, 0, 0, 0x1B));  /* divu s1, s2 */
+            EMIT_ADDIU(REG_AT, REG_ZERO, -1);   /* AT = 0xFFFFFFFF (divz lo) */
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x12));  /* mflo T8 = quotient */
+            EMIT_MOVZ(REG_T8, REG_AT, s2);          /* if s2==0: T8 = -1 */
             EMIT_SW(REG_T8, CPU_LO, REG_S0);
-            uint32_t *b_end_divu = code_ptr;
-            emit(MK_I(4, REG_ZERO, REG_ZERO, 0)); /* beq zero,zero,@end (placeholder) */
-            EMIT_SW(REG_T9, CPU_HI, REG_S0);      /* delay slot */
-            /* @divz: lo = 0xFFFFFFFF, hi = rs */
-            EMIT_SW(REG_T8, CPU_HI, REG_S0);  /* hi = rs (T0 still has rs) */
-            EMIT_ADDIU(REG_T8, REG_ZERO, -1); /* t0 = 0xFFFFFFFF */
-            EMIT_SW(REG_T8, CPU_LO, REG_S0);  /* lo = 0xFFFFFFFF */
-            /* @end: patch the branch */
-            {
-                int32_t off = (int32_t)(code_ptr - b_end_divu - 1);
-                *b_end_divu = (*b_end_divu & 0xFFFF0000) | (off & 0xFFFF);
+            emit(MK_R(0, 0, 0, REG_T8, 0, 0x10));  /* mfhi T8 = remainder */
+            /* divz hi = rs: reload if s1 was clobbered by mflo */
+            if (s1 == REG_T8) {
+                EMIT_LW(REG_AT, CPU_REG(rs), REG_S0);
+                EMIT_MOVZ(REG_T8, REG_AT, s2);
+            } else {
+                EMIT_MOVZ(REG_T8, s1, s2);
             }
+            EMIT_SW(REG_T8, CPU_HI, REG_S0);
             reg_cache_invalidate();
             break;
         }

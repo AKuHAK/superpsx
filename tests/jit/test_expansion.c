@@ -140,10 +140,10 @@ static void test_expansion_muldiv(void)
     check_expansion("MULTU", ee, 150, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIV(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIV", ee, 280, &pg_ctx);
+    check_expansion("DIV", ee, 200, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIVU(R_T1, R_T2)}, 1, REPEAT, NULL);
-    check_expansion("DIVU", ee, 250, &pg_ctx);
+    check_expansion("DIVU", ee, 170, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_MFHI(R_T1)}, 1, REPEAT, NULL);
     check_expansion("MFHI", ee, 40, &pg_ctx);

@@ -311,6 +311,7 @@ static inline void align_clear(int r) { align_known_mask &= ~(1u << r); }
 extern uint64_t stat_cache_hits;
 extern uint64_t stat_cache_misses;
 extern uint64_t stat_cache_collisions;
+extern uint64_t stat_cache_flushes;
 extern uint64_t stat_blocks_executed;
 extern uint64_t stat_total_cycles;
 extern uint64_t stat_total_native_instrs;

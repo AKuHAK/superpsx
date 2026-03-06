@@ -100,6 +100,7 @@ void host_log_flush(void)
 uint64_t stat_cache_hits = 0;
 uint64_t stat_cache_misses = 0;
 uint64_t stat_cache_collisions = 0;
+uint64_t stat_cache_flushes = 0;
 uint64_t stat_blocks_executed = 0;
 uint64_t stat_total_cycles = 0;
 uint64_t stat_total_native_instrs = 0;
@@ -162,11 +163,12 @@ void dynarec_print_stats(void)
     if (stat_total_psx_instrs > 0)
         printf("  Expansion Ratio : %.2f (R5900/PSX)\n",
                (double)stat_total_native_instrs / (double)stat_total_psx_instrs);
-    printf("  Blocks compiled : %u\n", (unsigned)blocks_compiled);
+    printf("  Blocks compiled : %u (current cache)\n", (unsigned)blocks_compiled);
     printf("  Cache hits      : %llu (%.1f%%)\n",
            (unsigned long long)stat_cache_hits,
            total_lookups ? (double)stat_cache_hits * 100.0 / total_lookups : 0.0);
     printf("  Cache misses    : %llu (compiles)\n", (unsigned long long)stat_cache_misses);
+    printf("  Cache flushes   : %llu\n", (unsigned long long)stat_cache_flushes);
     printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
     printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
     printf("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);

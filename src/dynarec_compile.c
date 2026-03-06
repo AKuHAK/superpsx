@@ -795,6 +795,9 @@ uint32_t *compile_block(uint32_t psx_pc)
         block_node_pool_idx = 0;
         patch_sites_count = 0;
         blocks_compiled = 0;
+#ifdef ENABLE_DYNAREC_STATS
+        stat_cache_flushes++;
+#endif
         tlb_bp_map_count = 0;
         /* Clear hash table — all native pointers are now stale */
         for (int i = 0; i < JIT_HT_SIZE; i++)

@@ -38,14 +38,14 @@ static char *str_trim(char *buf)
 int load_config_file(void)
 {
     /* Apply defaults */
-    psx_config.audio_enabled       = 1;
+    psx_config.audio_enabled = 1;
     psx_config.controllers_enabled = 1;
-    psx_config.region_pal          = 0;
-    psx_config.boot_bios_only      = 0;
-    psx_config.disable_audio       = 0;
-    psx_config.disable_gpu         = 0;
-    psx_config.frame_limit         = 1;
-    psx_config.gte_vu0             = 1;
+    psx_config.region_pal = 0;
+    psx_config.boot_bios_only = 0;
+    psx_config.disable_audio = 0;
+    psx_config.disable_gpu = 0;
+    psx_config.frame_limit = 1;
+    psx_config.gte_vu0 = 1;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 

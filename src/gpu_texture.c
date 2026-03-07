@@ -177,10 +177,21 @@ static struct
     uint32_t page_hits;       /* page data already in GS VRAM (no re-upload) */
     uint32_t page_uploads;    /* page data re-uploaded (dirty) */
     uint32_t clut_uploads;    /* CLUT round-robin uploads (always) */
+    uint32_t clut_aligned_bypasses; /* CSM2 direct VRAM mapping (aligned) */
     uint32_t rect_fallbacks;
     uint64_t pixels_saved;
     uint32_t vram_gen_at_start;
 } tex_stats;
+
+/* ── Initialization ──────────────────────────────────────────────── */
+void Tex_Cache_Init(void)
+{
+    memset(page_gen, 0, sizeof(page_gen));
+    memset(page_format, 0xFF, sizeof(page_format)); /* -1 = never uploaded */
+    clut_robin_idx = 0;
+    memset(&tex_stats, 0, sizeof(tex_stats));
+    tex_stats.vram_gen_at_start = vram_gen_counter;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
  *  HW CLUT Upload Functions
@@ -649,17 +660,20 @@ int Decode_TexPage_Cached(int tex_format,
         tex_stats.pixels_saved += 256 * 256;
     }
 
-    /* ── CLUT: always upload to fresh round-robin CBP ──────────── */
+    /* ── CLUT: always upload via CSM1 ────────────────────────────── */
+    /* CSM2 bypass for 4BPP was attempted but PCSX2's HW renderer does not
+     * reliably support CSM2 reads from the PSMCT16S mirror. Revert to
+     * CSM1 upload for all indexed formats until CSM2 is verified. */
     int cbp = alloc_clut_cbp();
     Upload_CLUT_CSM1(cbp, clut_x, clut_y, tex_format);
     tex_stats.clut_uploads++;
 
 #ifdef TEX_DEBUG_OVERLAY
-        printf("[DECODE] #%lu fmt=%d pg=%d(%d,%d) clut=(%d,%d) tbp=%d cbp=%d %s\n",
-               (unsigned long)tex_stats.total_requests,
-               tex_format, page_id, tex_page_x, tex_page_y,
-               clut_x, clut_y, tbp0, cbp,
-               was_upload ? "UPLOAD" : "HIT");
+    printf("[DECODE] #%lu fmt=%d pg=%d(%d,%d) clut=(%d,%d) tbp=%d cbp=%d %s\n",
+           (unsigned long)tex_stats.total_requests,
+           tex_format, page_id, tex_page_x, tex_page_y,
+           clut_x, clut_y, tbp0, cbp,
+           was_upload ? "UPLOAD" : "HIT");
 #endif
 
     *out_slot_x = tbp0;
@@ -685,6 +699,10 @@ void Tex_Cache_DumpStats(void)
         printf(" (%.1f%%)", (float)tex_stats.page_uploads * 100.0f / tex_stats.total_requests);
     printf("\n");
     printf("CLUT uploads (RR):  %lu\n", (unsigned long)tex_stats.clut_uploads);
+    printf("CLUT bypass (CSM2): %lu", (unsigned long)tex_stats.clut_aligned_bypasses);
+    if (tex_stats.total_requests > 0)
+        printf(" (%.1f%%)", (float)tex_stats.clut_aligned_bypasses * 100.0f / tex_stats.total_requests);
+    printf("\n");
     printf("Rect fallbacks:     %lu\n", (unsigned long)tex_stats.rect_fallbacks);
     printf("Pixels saved:       %llu\n", (unsigned long long)tex_stats.pixels_saved);
     printf("VRAM gen counter:   %lu (delta=%lu)\n",

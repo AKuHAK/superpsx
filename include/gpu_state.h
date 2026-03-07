@@ -119,9 +119,6 @@ extern int dither_enabled;
 /* Shadow PSX VRAM for CLUT texture decode */
 extern uint16_t *psx_vram_shadow;
 
-/* Debug log file - removed */
-/* extern FILE *gpu_debug_log; */
-
 /* VRAM transfer tracking for shadow writes */
 extern int vram_tx_x, vram_tx_y, vram_tx_w, vram_tx_h, vram_tx_pixel;
 
@@ -255,12 +252,13 @@ static inline uint64_t GS_PACK_PRIM_FROM_INT(uint64_t v)
 /* ── GS State Tracking ───────────────────────────────────────────── */
 typedef struct
 {
-    uint64_t tex0;  /* Last TEX0_1 written */
-    uint64_t test;  /* Last TEST_1 written */
-    uint64_t alpha; /* Last ALPHA_1 written */
-    uint64_t clamp; /* Last CLAMP_1 written */
-    int dthe;       /* Last DTHE written (0 or 1) */
-    int valid;      /* 0 = unknown, 1 = tracked values are current */
+    uint64_t tex0;     /* Last TEX0_1 written */
+    uint64_t test;     /* Last TEST_1 written */
+    uint64_t alpha;    /* Last ALPHA_1 written */
+    uint64_t clamp;    /* Last CLAMP_1 written */
+    uint64_t texclut;  /* Last TEXCLUT written (for CSM2) */
+    int dthe;          /* Last DTHE written (0 or 1) */
+    int valid;         /* 0 = unknown, 1 = tracked values are current */
 } gs_state_t;
 
 extern gs_state_t gs_state;

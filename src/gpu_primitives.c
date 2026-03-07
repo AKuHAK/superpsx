@@ -31,14 +31,18 @@ gs_state_t gs_state = {0, 0, 0, 0, -1, 0};
 static struct
 {
     int valid;
-    int tex_format;
-    int tex_page_x, tex_page_y;
-    int clut_x, clut_y;
+    int tex_format; /* 0=4BPP, 1=8BPP, 2=15BPP */
+    int tex_page_x;
+    int tex_page_y;
+    int clut_x;
+    int clut_y;
     uint32_t vram_gen;
-    int result; /* 0=not cached (15BPP), 2=HW CLUT */
-    int out_x, out_y;
+    int result; /* 0=not cached (15BPP), 2=HW CLUT (CSM1), 3=HW CLUT (CSM2) */
+    
     int hw_clut;
-    int hw_tbp0, hw_cbp;
+    int csm;    /* 0=CSM1, 1=CSM2 (matches GS TEX0.CSM bit directly) */
+    int hw_tbp0;
+    int hw_cbp;
 } prim_tex_cache = {0};
 
 /* Invalidate GS state tracking (called on E1, E6, GPU reset, etc.) */
@@ -98,6 +102,7 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     int result = Decode_TexPage_Cached(tex_format, tex_page_x, tex_page_y,
                                        clut_x, clut_y, out_x, out_y);
     PROF_POP(PROF_GPU_TEXCACHE);
+    prim_tex_cache.result = result;
     prim_tex_cache.valid = 1;
     prim_tex_cache.tex_format = tex_format;
     prim_tex_cache.tex_page_x = tex_page_x;
@@ -105,11 +110,10 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
     prim_tex_cache.clut_x = clut_x;
     prim_tex_cache.clut_y = clut_y;
     prim_tex_cache.vram_gen = vram_gen_counter;
-    prim_tex_cache.result = result;
-    prim_tex_cache.out_x = *out_x;
-    prim_tex_cache.out_y = *out_y;
-    prim_tex_cache.hw_clut = (result == 2) ? 1 : 0;
-    if (result == 2)
+    prim_tex_cache.hw_clut = (result == 2 || result == 3) ? 1 : 0;
+    prim_tex_cache.csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
+    
+    if (prim_tex_cache.hw_clut)
     {
         prim_tex_cache.hw_tbp0 = *out_x;
         prim_tex_cache.hw_cbp = *out_y;
@@ -409,12 +413,15 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int poly_clut_decoded = 0;
                 int poly_hw_clut = 0; /* 1 = HW CLUT (PSMT8/4) */
                 int poly_uv_off_u = 0, poly_uv_off_v = 0;
-                int poly_hw_tbp0 = 0, poly_hw_cbp = 0;
                 int tex_cache_hit = 0;
+                int poly_csm = 0; /* 0=CSM1, 1=CSM2 */
+                int poly_clut_x = 0, poly_clut_y = 0;
                 if (is_textured)
                 {
                     int clut_x = ((verts[0].uv >> 16) & 0x3F) * 16;
                     int clut_y = (verts[0].uv >> 22) & 0x1FF;
+                    poly_clut_x = clut_x;
+                    poly_clut_y = clut_y;
 
                     int result;
                     tex_cache_hit = prim_tex_cache_lookup(tex_page_format,
@@ -423,22 +430,25 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     if (tex_cache_hit)
                     {
                         result = prim_tex_cache.result;
-                        poly_uv_off_u = prim_tex_cache.out_x;
-                        poly_uv_off_v = prim_tex_cache.out_y;
+                        poly_uv_off_u = prim_tex_cache.hw_tbp0;
+                        poly_uv_off_v = prim_tex_cache.hw_cbp;
+                        poly_csm = prim_tex_cache.csm;
                     }
                     else
                     {
+                        int out_x, out_y;
                         result = prim_tex_decode(tex_page_format,
                                                  poly_tex_page_x, poly_tex_page_y,
                                                  clut_x, clut_y,
-                                                 &poly_uv_off_u, &poly_uv_off_v);
+                                                 &out_x, &out_y);
+                        poly_csm = prim_tex_cache.csm; /* consistent: read from cache */
+                        poly_uv_off_u = out_x;
+                        poly_uv_off_v = out_y;
                     }
-                    if (result == 2)
+                    if (result == 2 || result == 3)
                     {
                         poly_clut_decoded = 1;
                         poly_hw_clut = 1;
-                        poly_hw_tbp0 = prim_tex_cache.hw_tbp0;
-                        poly_hw_cbp = prim_tex_cache.hw_cbp;
                         poly_uv_off_u = 0;
                         poly_uv_off_v = 0;
                     }
@@ -457,6 +467,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                          : 0;
                 uint64_t want_tex0 = 0;
                 uint64_t want_clamp = 0;
+                uint64_t want_texclut = 0;
                 int need_texflush = 0;
                 if (is_textured)
                 {
@@ -465,40 +476,37 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                         if (poly_hw_clut)
                         {
                             int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                            want_tex0 |= (uint64_t)poly_hw_tbp0;
-                            want_tex0 |= (uint64_t)4 << 14;
-                            want_tex0 |= (uint64_t)psm << 20;
-                            want_tex0 |= (uint64_t)8 << 26;
-                            want_tex0 |= (uint64_t)8 << 30;
-                            want_tex0 |= (uint64_t)1 << 34;
-                            want_tex0 |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
-                            want_tex0 |= (uint64_t)poly_hw_cbp << 37;
-                            want_tex0 |= (uint64_t)GS_PSM_16 << 51;
-                            want_tex0 |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
+                            if (poly_csm) {
+                                /* CSM2: read CLUT directly from PSX VRAM mirror.
+                                 * TCC=1 + TEXA{0x80,1,0x80}: 0x0000→transparent (AEM),
+                                 * non-zero→opaque (TA0/TA1=0x80) regardless of STP.
+                                 * CBA=0 (PSX VRAM base), CPSM=16S (match storage).
+                                 * CLD=2 needed for PCSX2 (triggers CLUT buffer load). */
+                                want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
+                                                         1/*TCC*/, (is_raw_tex ? 1 : 0),
+                                                         0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
+                                want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
+                                                               poly_clut_x / 16, poly_clut_y);
+                            } else {
+                                /* CSM1: uploaded CLUT at CBP */
+                                want_tex0 = GS_SET_TEX0(prim_tex_cache.hw_tbp0, 4, psm, 8, 8,
+                                                         1/*TCC*/, (is_raw_tex ? 1 : 0),
+                                                         prim_tex_cache.hw_cbp, GS_PSM_16,
+                                                         0/*CSM1*/, 0, 4/*CLD*/);
+                            }
                             /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                             want_clamp = Compute_TexWin_Clamp();
                         }
                         else
                         {
-                            want_tex0 |= (uint64_t)4096;
-                            want_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-                            want_tex0 |= (uint64_t)GS_PSM_16S << 20;
-                            want_tex0 |= (uint64_t)10 << 26;
-                            want_tex0 |= (uint64_t)10 << 30;
-                            want_tex0 |= (uint64_t)1 << 34;
-                            want_tex0 |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
+                            want_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
                         }
                         need_texflush = !tex_cache_hit;
                     }
                     else
                     {
                         /* Non-CLUT 15BPP: default VRAM view */
-                        want_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-                        want_tex0 |= (uint64_t)GS_PSM_16S << 20;
-                        want_tex0 |= (uint64_t)10 << 26;
-                        want_tex0 |= (uint64_t)9 << 30;
-                        want_tex0 |= (uint64_t)1 << 34;
-                        want_tex0 |= (uint64_t)(is_raw_tex ? 1 : 0) << 35;
+                        want_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                 }
 
@@ -508,7 +516,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int emit_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != want_tex0 || need_texflush));
                 int emit_test = (is_textured && (!gs_state.valid || gs_state.test != want_test));
                 int emit_clamp = (is_textured && poly_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
-                int state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp;
+                int emit_texclut = (is_textured && poly_hw_clut && poly_csm &&
+                                    (!gs_state.valid || gs_state.texclut != want_texclut));
+                int state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
 
                 int ndata = is_textured ? 13 : 9; /* PRIM + 4×(UV+RGBAQ+XYZ) or 4×(RGBAQ+XYZ) */
                 ndata += state_qws;
@@ -520,6 +530,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
                 if (emit_clamp)
                     Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
+                if (emit_texclut)
+                    Push_GIF_Data(want_texclut, GS_REG_TEXCLUT);
                 if (emit_tex0)
                 {
                     Push_GIF_Data(want_tex0, GS_REG_TEX0);
@@ -551,7 +563,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     gs_state.tex0 = want_tex0;
                     gs_state.test = want_test;
                     if (poly_hw_clut)
+                    {
                         gs_state.clamp = want_clamp;
+                        if (poly_csm)
+                            gs_state.texclut = want_texclut;
+                    }
                 }
                 gs_state.valid = 1;
 
@@ -615,10 +631,14 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int tri_uv_off_u = 0, tri_uv_off_v = 0;
             int tri_hw_tbp0 = 0, tri_hw_cbp = 0;
             int tri_cache_hit = 0;
+            int tri_csm = 0; /* 0=CSM1, 1=CSM2 */
+            int tri_clut_x = 0, tri_clut_y = 0;
             if (is_textured)
             {
                 int clut_x = ((verts[0].uv >> 16) & 0x3F) * 16;
                 int clut_y = (verts[0].uv >> 22) & 0x1FF;
+                tri_clut_x = clut_x;
+                tri_clut_y = clut_y;
 
                 int result;
                 tri_cache_hit = prim_tex_cache_lookup(tex_page_format,
@@ -627,17 +647,22 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (tri_cache_hit)
                 {
                     result = prim_tex_cache.result;
-                    tri_uv_off_u = prim_tex_cache.out_x;
-                    tri_uv_off_v = prim_tex_cache.out_y;
+                    tri_uv_off_u = prim_tex_cache.hw_tbp0;
+                    tri_uv_off_v = prim_tex_cache.hw_cbp;
+                    tri_csm = prim_tex_cache.csm;
                 }
                 else
                 {
+                    int out_x, out_y;
                     result = prim_tex_decode(tex_page_format,
                                              poly_tex_page_x, poly_tex_page_y,
                                              clut_x, clut_y,
-                                             &tri_uv_off_u, &tri_uv_off_v);
+                                             &out_x, &out_y);
+                    tri_csm = prim_tex_cache.csm; /* consistent: read from cache */
+                    tri_uv_off_u = out_x;
+                    tri_uv_off_v = out_y;
                 }
-                if (result == 2)
+                if (result == 2 || result == 3)
                 {
                     tri_clut_decoded = 1;
                     tri_hw_clut = 1;
@@ -660,6 +685,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                    : 0;
             uint64_t tw_tex0 = 0;
             uint64_t tw_clamp = 0;
+            uint64_t tw_texclut = 0;
             int tw_texflush = 0;
             if (is_textured)
             {
@@ -668,40 +694,33 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     if (tri_hw_clut)
                     {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                        tw_tex0 |= (uint64_t)tri_hw_tbp0;
-                        tw_tex0 |= (uint64_t)4 << 14;
-                        tw_tex0 |= (uint64_t)psm << 20;
-                        tw_tex0 |= (uint64_t)8 << 26;
-                        tw_tex0 |= (uint64_t)8 << 30;
-                        tw_tex0 |= (uint64_t)1 << 34;
-                        tw_tex0 |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
-                        tw_tex0 |= (uint64_t)tri_hw_cbp << 37;
-                        tw_tex0 |= (uint64_t)GS_PSM_16 << 51;
-                        tw_tex0 |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
+                        if (tri_csm) {
+                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for PCSX2 */
+                            tw_tex0 = GS_SET_TEX0(tri_hw_tbp0, 4, psm, 8, 8,
+                                                   1/*TCC*/, (is_raw_tex_tri ? 1 : 0),
+                                                   0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
+                            tw_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
+                                                         tri_clut_x / 16, tri_clut_y);
+                        } else {
+                            /* CSM1 */
+                            tw_tex0 = GS_SET_TEX0(tri_hw_tbp0, 4, psm, 8, 8,
+                                                   1/*TCC*/, (is_raw_tex_tri ? 1 : 0),
+                                                   tri_hw_cbp, GS_PSM_16,
+                                                   0/*CSM1*/, 0, 4/*CLD*/);
+                        }
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         tw_clamp = Compute_TexWin_Clamp();
                     }
                     else
                     {
-                        tw_tex0 |= (uint64_t)4096;
-                        tw_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-                        tw_tex0 |= (uint64_t)GS_PSM_16S << 20;
-                        tw_tex0 |= (uint64_t)10 << 26;
-                        tw_tex0 |= (uint64_t)10 << 30;
-                        tw_tex0 |= (uint64_t)1 << 34;
-                        tw_tex0 |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
+                        tw_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10, 1, (is_raw_tex_tri ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     tw_texflush = !tri_cache_hit;
                 }
                 else
                 {
                     /* Non-CLUT 15BPP: default VRAM view */
-                    tw_tex0 |= (uint64_t)PSX_VRAM_FBW << 14;
-                    tw_tex0 |= (uint64_t)GS_PSM_16S << 20;
-                    tw_tex0 |= (uint64_t)10 << 26;
-                    tw_tex0 |= (uint64_t)9 << 30;
-                    tw_tex0 |= (uint64_t)1 << 34;
-                    tw_tex0 |= (uint64_t)(is_raw_tex_tri ? 1 : 0) << 35;
+                    tw_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, (is_raw_tex_tri ? 1 : 0), 0, 0, 0, 0, 0);
                 }
             }
 
@@ -711,9 +730,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int e_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != tw_tex0 || tw_texflush));
             int e_test = (is_textured && (!gs_state.valid || gs_state.test != tw_test));
             int e_clamp = (is_textured && tri_hw_clut && (!gs_state.valid || gs_state.clamp != tw_clamp));
+            int e_texclut = (is_textured && tri_hw_clut && tri_csm &&
+                             (!gs_state.valid || gs_state.texclut != tw_texclut));
 
             int ndata = is_textured ? 10 : 7;
-            ndata += e_dthe + e_alpha + e_tex0 + (e_tex0 && tw_texflush) + e_test + e_clamp;
+            ndata += e_dthe + e_alpha + e_tex0 + (e_tex0 && tw_texflush) + e_test + e_clamp + e_texclut;
             Push_GIF_Tag(GIF_TAG_LO(ndata, 1, 0, 0, 0, 1), GIF_REG_AD);
 
             if (e_dthe)
@@ -722,6 +743,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 Push_GIF_Data(tw_alpha, GS_REG_ALPHA_1);
             if (e_clamp)
                 Push_GIF_Data(tw_clamp, GS_REG_CLAMP_1);
+            if (e_texclut)
+                Push_GIF_Data(tw_texclut, GS_REG_TEXCLUT);
             if (e_tex0)
             {
                 Push_GIF_Data(tw_tex0, GS_REG_TEX0);
@@ -752,7 +775,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 gs_state.tex0 = tw_tex0;
                 gs_state.test = tw_test;
                 if (tri_hw_clut)
+                {
                     gs_state.clamp = tw_clamp;
+                    if (tri_csm)
+                        gs_state.texclut = tw_texclut;
+                }
             }
             gs_state.valid = 1;
 
@@ -876,6 +903,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int flip_handled = 0;
             int cache_slot_x = 0, cache_slot_y = 0;
             int rect_hw_tbp0 = 0, rect_hw_cbp = 0;
+            int rect_csm = 0; /* 0=CSM1, 1=CSM2 */
+            int rect_clut_x = 0, rect_clut_y = 0;
 
             // Use page-level cache when CLUT format or tex window active
             int need_perpixel = tex_win_active ||
@@ -885,6 +914,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             {
                 int clut_x = ((uv_clut >> 16) & 0x3F) * 16;
                 int clut_y = (uv_clut >> 22) & 0x1FF;
+                rect_clut_x = clut_x;
+                rect_clut_y = clut_y;
 
                 int result;
                 if (prim_tex_cache_lookup(tex_page_format,
@@ -892,8 +923,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                           clut_x, clut_y))
                 {
                     result = prim_tex_cache.result;
-                    cache_slot_x = prim_tex_cache.out_x;
-                    cache_slot_y = prim_tex_cache.out_y;
+                    cache_slot_x = prim_tex_cache.hw_tbp0;
+                    cache_slot_y = prim_tex_cache.hw_cbp;
+                    rect_csm = prim_tex_cache.csm;
                 }
                 else
                 {
@@ -901,8 +933,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                              tex_page_x, tex_page_y,
                                              clut_x, clut_y,
                                              &cache_slot_x, &cache_slot_y);
+                    rect_csm = prim_tex_cache.csm; /* consistent: read from cache */
                 }
-                if (result == 2)
+                if (result == 2 || result == 3)
                 {
                     clut_decoded = 1;
                     rect_hw_clut = 1;
@@ -1104,43 +1137,39 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 uint64_t want_test_r = (uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST();
                 uint64_t want_tex0_r = 0;
                 uint64_t want_clamp_r = 0;
+                uint64_t want_texclut_r = 0;
                 int need_texflush_r = 0;
                 if (clut_decoded || is_raw_texture)
                 {
                     if (rect_hw_clut)
                     {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                        want_tex0_r |= (uint64_t)rect_hw_tbp0;
-                        want_tex0_r |= (uint64_t)4 << 14;
-                        want_tex0_r |= (uint64_t)psm << 20;
-                        want_tex0_r |= (uint64_t)8 << 26;
-                        want_tex0_r |= (uint64_t)8 << 30;
-                        want_tex0_r |= (uint64_t)1 << 34;
-                        want_tex0_r |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
-                        want_tex0_r |= (uint64_t)rect_hw_cbp << 37;
-                        want_tex0_r |= (uint64_t)GS_PSM_16 << 51;
-                        want_tex0_r |= (uint64_t)4 << 61; /* CLD=4: reload if CBP changed */
+                        if (rect_csm) {
+                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for PCSX2 */
+                            want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
+                                                       1/*TCC*/, (is_raw_texture ? 1 : 0),
+                                                       0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
+                            want_texclut_r = GS_SET_TEXCLUT(PSX_VRAM_FBW,
+                                                             rect_clut_x / 16, rect_clut_y);
+                        } else {
+                            /* CSM1: uploaded CLUT at CBP */
+                            want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
+                                                       1/*TCC*/, (is_raw_texture ? 1 : 0),
+                                                       rect_hw_cbp, GS_PSM_16,
+                                                       0/*CSM1*/, 0, 4/*CLD*/);
+                        }
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         want_clamp_r = Compute_TexWin_Clamp();
                     }
                     else if (clut_decoded)
                     {
-                        want_tex0_r |= (uint64_t)4096;
-                        want_tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
-                        want_tex0_r |= (uint64_t)GS_PSM_16S << 20;
-                        want_tex0_r |= (uint64_t)10 << 26;
-                        want_tex0_r |= (uint64_t)10 << 30;
-                        want_tex0_r |= (uint64_t)1 << 34;
-                        want_tex0_r |= (uint64_t)(is_raw_texture ? 1 : 0) << 35;
+                        want_tex0_r = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
+                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     else
                     {
-                        want_tex0_r |= (uint64_t)PSX_VRAM_FBW << 14;
-                        want_tex0_r |= (uint64_t)GS_PSM_16S << 20;
-                        want_tex0_r |= (uint64_t)10 << 26;
-                        want_tex0_r |= (uint64_t)9 << 30;
-                        want_tex0_r |= (uint64_t)1 << 34;
-                        want_tex0_r |= (uint64_t)1 << 35;
+                        want_tex0_r = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
+                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     need_texflush_r = !gs_state.valid || gs_state.tex0 != want_tex0_r;
                 }
@@ -1151,7 +1180,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                    (!gs_state.valid || gs_state.tex0 != want_tex0_r || need_texflush_r));
                 int emit_test_r = (!gs_state.valid || gs_state.test != want_test_r);
                 int emit_clamp_r = (rect_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp_r));
-                int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r + (emit_tex0_r && need_texflush_r) + emit_test_r + emit_clamp_r;
+                int emit_texclut_r = (rect_hw_clut && rect_csm &&
+                                      (!gs_state.valid || gs_state.texclut != want_texclut_r));
+                int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r + (emit_tex0_r && need_texflush_r) + emit_test_r + emit_clamp_r + emit_texclut_r;
 
                 int nregs = 1 + 6 + state_qws_r; /* PRIM + 2×(UV+RGBAQ+XYZ) + state */
 
@@ -1163,6 +1194,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     Push_GIF_Data(want_alpha_r, GS_REG_ALPHA_1);
                 if (emit_clamp_r)
                     Push_GIF_Data(want_clamp_r, GS_REG_CLAMP_1);
+                if (emit_texclut_r)
+                    Push_GIF_Data(want_texclut_r, GS_REG_TEXCLUT);
                 if (emit_tex0_r)
                 {
                     Push_GIF_Data(want_tex0_r, GS_REG_TEX0);
@@ -1189,7 +1222,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 if (clut_decoded || is_raw_texture)
                     gs_state.tex0 = want_tex0_r;
                 if (rect_hw_clut)
+                {
                     gs_state.clamp = want_clamp_r;
+                    if (rect_csm)
+                        gs_state.texclut = want_texclut_r;
+                }
                 gs_state.test = want_test_r;
                 gs_state.valid = 1;
 

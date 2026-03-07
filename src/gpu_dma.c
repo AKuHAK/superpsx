@@ -214,8 +214,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
 
                                     for (int v = 0; v < num_verts; v++)
                                     {
-                                        int16_t px = (int16_t)((int32_t)((cmd_ptr[v+1] & 0xFFFF) << 21) >> 21);
-                                        int16_t py = (int16_t)((int32_t)((cmd_ptr[v+1] >> 16) << 21) >> 21);
+                                        int16_t px = (int16_t)((int32_t)((cmd_ptr[v + 1] & 0xFFFF) << 21) >> 21);
+                                        int16_t py = (int16_t)((int32_t)((cmd_ptr[v + 1] >> 16) << 21) >> 21);
                                         Push_GIF_Data(rgbaq, GS_REG_RGBAQ);
                                         Push_GIF_Data(GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0), GS_REG_XYZ2);
                                     }
@@ -228,7 +228,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                                     int16_t x2 = (int16_t)((int32_t)((cmd_ptr[3] & 0xFFFF) << 21) >> 21);
                                     int16_t y2 = (int16_t)((int32_t)((cmd_ptr[3] >> 16) << 21) >> 21);
                                     int32_t a = (int32_t)x0 * ((int32_t)y1 - y2) + (int32_t)x1 * ((int32_t)y2 - y0) + (int32_t)x2 * ((int32_t)y0 - y1);
-                                    if (a < 0) a = -a;
+                                    if (a < 0)
+                                        a = -a;
                                     uint32_t area = (uint32_t)(a >> 1);
 
                                     if (is_quad)
@@ -236,7 +237,8 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                                         int16_t x3 = (int16_t)((int32_t)((cmd_ptr[4] & 0xFFFF) << 21) >> 21);
                                         int16_t y3 = (int16_t)((int32_t)((cmd_ptr[4] >> 16) << 21) >> 21);
                                         int32_t a2 = (int32_t)x1 * ((int32_t)y3 - y2) + (int32_t)x3 * ((int32_t)y2 - y1) + (int32_t)x2 * ((int32_t)y1 - y3);
-                                        if (a2 < 0) a2 = -a2;
+                                        if (a2 < 0)
+                                            a2 = -a2;
                                         area += (uint32_t)(a2 >> 1);
                                     }
                                     gpu_estimated_pixels += area;
@@ -246,7 +248,7 @@ void GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                                     continue;
                                 }
                             }
-                            
+
                             /* Polygons, rects, non-polyline lines → fast translate */
                             PROF_PUSH(PROF_GPU_PRIM);
                             int size = Translate_GP0_to_GS(cmd_ptr);

@@ -129,10 +129,14 @@ void Setup_GS_Environment(void)
     Push_GIF_Data(GS_SET_TEX1(1, 0, 0, 0, 0, 0, 0), GS_REG_TEX1_1);
 
     // CLAMP_1 (Reg 0x08) - Texture clamping
-    Push_GIF_Data(GS_SET_CLAMP(0,0,0,0,0,0), GS_REG_CLAMP_1);
+    Push_GIF_Data(GS_SET_CLAMP(0, 0, 0, 0, 0, 0), GS_REG_CLAMP_1);
 
     // TEXA (Reg 0x3B) - Texture alpha expansion for CT16S
-    Push_GIF_Data(GS_SET_TEXA(0, 0, 0x80), GS_REG_TEXA);
+    // TA0=0x80, AEM=1, TA1=0x80:
+    //   STP=0 + non-zero color → alpha=TA0=0x80 (visible, PSX "opaque")
+    //   STP=0 + color=0x0000   → AEM: alpha=0   (transparent)
+    //   STP=1                  → alpha=TA1=0x80  (visible, PSX "semi-trans")
+    Push_GIF_Data(GS_SET_TEXA(0x80, 1, 0x80), GS_REG_TEXA);
 
     Flush_GIF();
 }

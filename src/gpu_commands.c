@@ -293,6 +293,50 @@ void GPU_WriteGP0(uint32_t data)
 
                 gpu_stat |= 0x08000000;
 
+                /* ── GS→shadow VRAM readback ─────────────────────────────
+                 * The PSX BIOS (and some games) render primitives to offscreen
+                 * VRAM regions and then read them back via C0+DMA.  Our GS HW
+                 * renderer draws to GS VRAM but never updates psx_vram_shadow
+                 * for those primitives.  Fix: read the region back from GS VRAM
+                 * into the shadow buffer so GPU_Read() returns correct data. */
+                if (psx_vram_shadow && vram_read_w > 0 && vram_read_h > 0)
+                {
+                    /* Flush any pending GIF packets so GS VRAM is up-to-date */
+                    if (fast_gif_ptr != (gif_qword_t *)&gif_packet_buf[current_buffer][0])
+                        Flush_GIF();
+
+                    int w_aligned = (vram_read_w + 7) & ~7; /* 8-pixel alignment for GS transfer */
+                    int total_pixels = w_aligned * vram_read_h;
+                    int buf_bytes = total_pixels * 2;       /* 16bpp */
+                    int buf_qwc = (buf_bytes + 15) / 16;
+                    void *rb_buf = memalign(64, buf_qwc * 16);
+                    if (rb_buf)
+                    {
+                        uint16_t *pixels = GS_ReadbackRegion(vram_read_x, vram_read_y,
+                                                             w_aligned, vram_read_h,
+                                                             rb_buf, buf_qwc);
+                        /* Copy readback data into psx_vram_shadow.
+                         * GS CT16S stores STP in bit 15 with different semantics
+                         * than PSX: our FillRect writes alpha=0x80 → STP=1 even
+                         * for black pixels, but on PSX, FillRect(000000) produces
+                         * raw 0x0000.  Strip bit 15 so the shadow matches PSX
+                         * behaviour: 0x0000 = transparent, non-zero = visible. */
+                        for (int row = 0; row < vram_read_h; row++)
+                        {
+                            int dy = vram_read_y + row;
+                            if (dy >= 512) dy -= 512;
+                            for (int col = 0; col < vram_read_w; col++)
+                            {
+                                int dx = vram_read_x + col;
+                                if (dx >= 1024) dx -= 1024;
+                                uint16_t px = pixels[row * w_aligned + col] & 0x7FFF;
+                                psx_vram_shadow[dy * 1024 + dx] = px;
+                            }
+                        }
+                        free(rb_buf);
+                    }
+                }
+
                 DLOG("GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
                      vram_read_w, vram_read_h, vram_read_x, vram_read_y, vram_read_remaining);
             }

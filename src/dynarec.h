@@ -383,6 +383,9 @@ static inline void emit(uint32_t inst)
 #define EMIT_DIVU1(rs, rt) emit(MK_R(0x1C, (rs), (rt), 0, 0, 0x1B))
 #define EMIT_MFLO1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x12))
 #define EMIT_MFHI1(rd) emit(MK_R(0x1C, 0, 0, (rd), 0, 0x10))
+/* R5900 MMI packed min/max (P19: batch saturation) */
+#define EMIT_PMAXW(rd, rs, rt) emit(MK_R(0x1C, (rs), (rt), (rd), 0x03, 0x08))
+#define EMIT_PMINW(rd, rs, rt) emit(MK_R(0x1C, (rs), (rt), (rd), 0x03, 0x28))
 #define EMIT_MTLO1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x13))
 #define EMIT_MTHI1(rs) emit(MK_R(0x1C, (rs), 0, 0, 0, 0x11))
 

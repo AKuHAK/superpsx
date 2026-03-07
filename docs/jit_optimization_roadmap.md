@@ -68,10 +68,16 @@ Standalone ops (RTPS, NCS, NCDS, MVMVA) sin cambios.
 
 #### P19: MMI PMAXW/PMINW para Saturación Batch
 **Impacto:** Bajo-Medio (-4 a -6 palabras por ir_sat) · **Esfuerzo:** 3-4 horas · **Riesgo:** Bajo
-**Estado:** ❌ No empezado
+**Estado:** ✅ Completado
 
-Reemplazar 6× SLT+MOVN (clamp 3 canales) con 2× PMAXW+PMINW sobre datos empaquetados 128-bit.
-Overhead de pack/unpack reduce la ventaja para saturaciones individuales; más útil en batch.
+Reemplazar patrones SLT+MOVN (clamp 3 canales) con PMAXW/PMINW del R5900 (signed per-word min/max).
+Aplicado a TODAS las saturaciones GTE inline: emit_ir_sat_store, emit_push_color_inline,
+emit_interpolate_color, SZ/SXY/IR0 en RTPS, OP, SQR, AVSZ3/4, GPF.
+
+Resultados: RTPS 2256→2032 (-224w, 125x→113x), NCS 2448→2160 (-288w),
+NCDS 3632→3152 (-480w), NCDT 10224→8784 (-1440w, 568x→488x),
+RTPT 5968→5360 (-608w), NCT 6672→5808 (-864w), NCCT 8496→7344 (-1152w),
+MVMVA 1008→912 (-96w), GTE xform 571→529 (-42w).
 
 ---
 

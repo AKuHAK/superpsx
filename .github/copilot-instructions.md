@@ -179,19 +179,19 @@ Completed optimizations (P1-P15):
 - P16: FPU DIV.S for RTPS/RTPT perspective division — replaces 52-word UNR (CLZ16+Newton+table) with 18-word FPU path.
 - P17: VU0 matrix multiply in JIT — emit_inline_mvmva uses VMULAX/VMADDAY/VMADDZ/VADD via VU0JITCache. ~30% faster multiply, same code size. C call for matrix refresh.
 - P18: Shared matrix loads in ×3 variants — vu0_preloaded[] array lets ×3 callers (RTPT/NCT/NCDT/NCCT) preload matrices into VF1-4/VF7-10 once, skipping redundant C calls. NCDT: 600x→568x, 4 fewer lite calls per ×3 op.
+- P19: MMI PMAXW/PMINW saturation — replace SLT+MOVN clamp patterns with R5900 PMAXW/PMINW (signed per-word min/max). Saves ~6 words per 3-channel clamp across all GTE inline ops. RTPS: 125x→113x, NCDT: 568x→488x.
 
 Current expansion baselines (110/110 playground tests):
 - ALU: ADDU 40 (2.2x), ADDIU 39 (2.2x), SLL 39 (2.2x), LUI 38 (2.1x)
 - MulDiv: MULT 149 (8.3x), DIV 197 (10.9x), DIVU 165 (9.2x)
 - Memory: LW 133 (7.4x), SW 395 (21.9x), LB 133 (7.4x), SB 355 (19.7x)
 - GTE: MTC2 82 (4.6x), MFC2 83 (4.6x), LWC2 144 (8.0x), SWC2 422 (23.4x)
-- GTE commands: RTPS 2256 (125.3x), NCLIP 288 (16.0x), MVMVA 1008 (56.0x)
-- GTE lighting: NCS 2448 (136.0x), NCDS 3632 (201.8x), NCDT 10224 (568.0x)
-- GTE ×3: RTPT 5968 (331.6x), NCT 6672 (370.7x), NCCT 8496 (472.0x)
-- Mixed: GTE xform 571 (31.7x), SW burst 401 (22.3x)
+- GTE commands: RTPS 2032 (112.9x), NCLIP 288 (16.0x), MVMVA 912 (50.7x)
+- GTE lighting: NCS 2160 (120.0x), NCDS 3152 (175.1x), NCDT 8784 (488.0x)
+- GTE ×3: RTPT 5360 (297.8x), NCT 5808 (322.7x), NCCT 7344 (408.0x)
+- Mixed: GTE xform 529 (29.4x), SW burst 401 (22.3x)
 
-Next optimization targets (P19+):
-- P19: MMI PMAXW/PMINW for batch saturation
+Next optimization targets (P20+):
 
 ## File Management
 

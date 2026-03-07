@@ -553,19 +553,14 @@ void GPU_WriteGP0(uint32_t data)
             else
                 gpu_stat = (gpu_stat & ~0x87FF) | (data & 0x7FF);
 
-            Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-            /* Use SDK macro for TEX0 packing (small variant covers fields we need) */
-            Push_GIF_Data(GS_SET_TEX0_SMALL(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9, 1, 0), GS_REG_TEX0);
-            Push_GIF_Data(GS_SET_TEXFLUSH(0), GS_REG_TEXFLUSH);
-
             uint32_t dither_enable = (data >> 9) & 1;
             dither_enabled = dither_enable;
-            Push_GIF_Data(GS_SET_DTHE(dither_enable), GS_REG_DTHE);
 
-            Push_GIF_Data(Get_Alpha_Reg(trans_mode), GS_REG_ALPHA_1);
-
+            /* G5: No GIF writes here — TEX0/TEXFLUSH/DTHE/ALPHA_1 are
+             * always re-emitted by the next primitive via lazy gs_state
+             * tracking (which checks gs_state.valid after invalidation).
+             * Saves 5 QWs (tag + 4 regs) per E1 change. */
             Prim_InvalidateGSState();
-            // Flush_GIF(); <-- Removed: batching register changes
         }
     }
     break;

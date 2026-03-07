@@ -571,6 +571,132 @@ static void test_different_texpage(void)
 }
 
 /* ================================================================
+ *  G5: E1 Handler Optimization Tests
+ *
+ *  E1 (Draw Mode) should NOT emit GIF data directly. All GS register
+ *  writes (TEX0, TEXFLUSH, DTHE, ALPHA_1) should be deferred to
+ *  the next primitive, which always re-evaluates via gs_state tracking.
+ * ================================================================ */
+
+/* G5a: E1 alone should NOT emit GIF registers (after optimization).
+ * Currently this test FAILS (E1 emits TEX0+TEXFLUSH+DTHE+ALPHA_1). */
+static void test_e1_no_gif(void)
+{
+    BEGIN_GPU_TEST("e1_no_gif");
+
+    /* Warm up with a flat tri so gs_state.valid = 1 */
+    emit_flat_tri(0x808080);
+    gp_gif_reset_counter();
+
+    /* E1 change: switch to 4BPP, page 0, semi-trans mode 2, dither on */
+    EMIT_GP0(0xE1000000 | (0 << 0) | (0 << 4) | (0 << 7) | (2 << 5) | (1 << 9));
+
+    gp_gif_scan();
+    /* After optimization: E1 should produce zero TEX0 writes */
+    EXPECT_GIF_REG_COUNT("TEX0", GS_REG_TEX0, 0);
+
+    END_GPU_TEST();
+}
+
+/* G5b: E1 + textured quad — primitive emits correct TEX0 */
+static void test_e1_deferred_tex0(void)
+{
+    BEGIN_GPU_TEST("e1_def_tex0");
+    Tex_Cache_Init();
+    setup_texture_data(0, 0, 0, 256, 0);
+    vram_gen_counter++;
+
+    /* E1: set 4BPP page 0 */
+    EMIT_GP0(0xE1000000 | (0 << 7));
+
+    /* Textured quad — must emit TEX0 + TEXFLUSH */
+    emit_textured_quad(0, 0, 0, 256);
+
+    gp_gif_scan();
+    EXPECT_GIF_REG("TEX0", GS_REG_TEX0);
+    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* G5c: E1 dither change reflected in next draw */
+static void test_e1_dither_deferred(void)
+{
+    BEGIN_GPU_TEST("e1_dither");
+
+    /* Initial draw: default dither (off or on depending on E1) */
+    EMIT_GP0(0xE1000000 | (0 << 9)); /* dither=0 */
+    emit_flat_tri(0x808080);
+
+    /* Check first draw has DTHE=0 */
+    gp_gif_scan();
+    EXPECT_GIF_REG_VALUE("DTHE", GS_REG_DTHE, 0);
+    gp_gif_reset_counter();
+
+    /* Change dither via E1 */
+    EMIT_GP0(0xE1000000 | (1 << 9)); /* dither=1 */
+
+    /* Shaded tri (uses dither) — should pick up dither=1 from E1 */
+    EMIT_GP0(0x30808080);   /* shaded tri */
+    EMIT_GP0(10 | (10 << 16));
+    EMIT_GP0(0x00FF0000);
+    EMIT_GP0(50 | (10 << 16));
+    EMIT_GP0(0x0000FF00);
+    EMIT_GP0(30 | (50 << 16));
+
+    gp_gif_scan();
+    EXPECT_GIF_REG_VALUE("DTHE", GS_REG_DTHE, 1);
+
+    END_GPU_TEST();
+}
+
+/* G5d: E1 alpha mode change reflected in next semi-trans draw */
+static void test_e1_alpha_deferred(void)
+{
+    BEGIN_GPU_TEST("e1_alpha");
+
+    /* E1: semi-trans mode 0 */
+    EMIT_GP0(0xE1000000 | (0 << 5));
+    emit_semitrans_tri(0x808080);
+
+    gp_gif_scan();
+    EXPECT_GIF_REG_VALUE("ALPHA_1", GS_REG_ALPHA_1, Get_Alpha_Reg(0));
+    gp_gif_reset_counter();
+
+    /* E1: switch to semi-trans mode 2 */
+    EMIT_GP0(0xE1000000 | (2 << 5));
+
+    emit_semitrans_tri(0x808080);
+
+    gp_gif_scan();
+    EXPECT_GIF_REG_VALUE("ALPHA_1", GS_REG_ALPHA_1, Get_Alpha_Reg(2));
+
+    END_GPU_TEST();
+}
+
+/* G5e: Multiple E1 before draw — only last state matters */
+static void test_e1_multiple_before_draw(void)
+{
+    BEGIN_GPU_TEST("e1_multi");
+
+    /* Rapid E1 changes — only the last should take effect */
+    EMIT_GP0(0xE1000000 | (0 << 5) | (0 << 9)); /* mode 0, dither off */
+    EMIT_GP0(0xE1000000 | (1 << 5) | (1 << 9)); /* mode 1, dither on */
+    EMIT_GP0(0xE1000000 | (3 << 5) | (0 << 9)); /* mode 3, dither off */
+
+    /* Reset captures: drop E1 intermediate GIF data, keep GPU state */
+    gp_gif_reset_counter();
+
+    /* Semi-trans tri — should use mode 3 from the last E1 */
+    emit_semitrans_tri(0x808080);
+
+    gp_gif_scan();
+    EXPECT_GIF_REG_VALUE("ALPHA_1", GS_REG_ALPHA_1, Get_Alpha_Reg(3));
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -595,4 +721,11 @@ void gp_run_state_tests(void)
     test_dthe_shaded_vs_flat();      /* S16 */
     test_same_state_no_reemit();     /* S17 */
     test_different_texpage();        /* S18 */
+
+    printf("\n--- G5: E1 Handler Optimization Tests ---\n");
+    test_e1_no_gif();               /* G5a */
+    test_e1_deferred_tex0();        /* G5b */
+    test_e1_dither_deferred();      /* G5c */
+    test_e1_alpha_deferred();       /* G5d */
+    test_e1_multiple_before_draw(); /* G5e */
 }

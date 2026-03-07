@@ -174,10 +174,137 @@ void gp_reset_state(void);
 } while(0)
 
 /* ================================================================
+ *  GIF Register Capture — parse GIF buffer for register writes
+ *
+ *  After GP0 commands execute, call gp_gif_scan() to extract all
+ *  A+D register writes from the GIF buffer.  Then use EXPECT_GIF_REG,
+ *  EXPECT_NO_GIF_REG, etc. to verify what the GPU actually emitted.
+ * ================================================================ */
+
+#define GIF_CAPTURE_MAX 256
+
+typedef struct {
+    uint64_t data;   /* Register value (d0) */
+    uint16_t reg;    /* GS register address (d1 low 8 bits) */
+} gif_reg_capture_t;
+
+extern gif_reg_capture_t gif_captures[GIF_CAPTURE_MAX];
+extern int gif_capture_count;
+
+/*
+ * Scan the GIF buffer from base to fast_gif_ptr, extracting all AD-mode
+ * register writes into gif_captures[].  Returns the capture count.
+ * This should be called AFTER GP0 commands but BEFORE gp_reset_state().
+ */
+int gp_gif_scan(void);
+
+/*
+ * Reset only the GIF pointer and QW counter without touching GPU state.
+ * Useful for multi-draw tests where you want to measure each draw separately.
+ */
+void gp_gif_reset_counter(void);
+
+/* ================================================================
  *  Test Runners
  * ================================================================ */
 void gp_run_expansion_tests(void);
 void gp_run_expansion_gp1_tests(void);
 void gp_run_clut_tests(void);
+void gp_run_state_tests(void);
+void gp_run_vram_tests(void);
+
+/* ================================================================
+ *  GIF Capture Validation Macros
+ * ================================================================ */
+
+/* Count occurrences of a register in captures */
+static inline int gp_gif_reg_count(uint16_t reg) {
+    int c = 0;
+    for (int i = 0; i < gif_capture_count; i++)
+        if (gif_captures[i].reg == reg) c++;
+    return c;
+}
+
+/* Find first occurrence of a register and return its data value */
+static inline int gp_gif_reg_find(uint16_t reg, uint64_t *out_data) {
+    for (int i = 0; i < gif_capture_count; i++)
+        if (gif_captures[i].reg == reg) {
+            if (out_data) *out_data = gif_captures[i].data;
+            return 1;
+        }
+    return 0;
+}
+
+/* Find last occurrence of a register */
+static inline int gp_gif_reg_find_last(uint16_t reg, uint64_t *out_data) {
+    for (int i = gif_capture_count - 1; i >= 0; i--)
+        if (gif_captures[i].reg == reg) {
+            if (out_data) *out_data = gif_captures[i].data;
+            return 1;
+        }
+    return 0;
+}
+
+/* Expect register present at least N times */
+#define EXPECT_GIF_REG_COUNT(reg_name, reg_val, expected) do { \
+    int _cnt = gp_gif_reg_count(reg_val); \
+    if (_cnt == (expected)) { \
+        printf("    %-16s: " reg_name " count=%d OK\n", gp_ctx.name, _cnt); \
+    } else { \
+        printf("  [FAIL] %-16s: " reg_name " count=%d expected %d\n", \
+               gp_ctx.name, _cnt, (expected)); \
+        gp_ctx.fail_count++; \
+    } \
+} while(0)
+
+/* Expect register present (at least once) */
+#define EXPECT_GIF_REG(reg_name, reg_val) do { \
+    if (gp_gif_reg_count(reg_val) > 0) { \
+        printf("    %-16s: " reg_name " present OK\n", gp_ctx.name); \
+    } else { \
+        printf("  [FAIL] %-16s: " reg_name " NOT found\n", gp_ctx.name); \
+        gp_ctx.fail_count++; \
+    } \
+} while(0)
+
+/* Expect register absent */
+#define EXPECT_NO_GIF_REG(reg_name, reg_val) do { \
+    int _cnt = gp_gif_reg_count(reg_val); \
+    if (_cnt == 0) { \
+        printf("    %-16s: " reg_name " absent OK\n", gp_ctx.name); \
+    } else { \
+        printf("  [FAIL] %-16s: " reg_name " found %d times (expected 0)\n", \
+               gp_ctx.name, _cnt); \
+        gp_ctx.fail_count++; \
+    } \
+} while(0)
+
+/* Expect register present with specific data value */
+#define EXPECT_GIF_REG_VALUE(reg_name, reg_val, expected_data) do { \
+    uint64_t _data = 0; \
+    if (gp_gif_reg_find(reg_val, &_data) && _data == (uint64_t)(expected_data)) { \
+        printf("    %-16s: " reg_name " value OK\n", gp_ctx.name); \
+    } else if (!gp_gif_reg_find(reg_val, NULL)) { \
+        printf("  [FAIL] %-16s: " reg_name " NOT found\n", gp_ctx.name); \
+        gp_ctx.fail_count++; \
+    } else { \
+        printf("  [FAIL] %-16s: " reg_name " value=0x%llx expected 0x%llx\n", \
+               gp_ctx.name, (unsigned long long)_data, (unsigned long long)(expected_data)); \
+        gp_ctx.fail_count++; \
+    } \
+} while(0)
+
+/* Expect VRAM shadow pixel value */
+#define EXPECT_VRAM_PIXEL(px, py, expected_16) do { \
+    uint16_t _got = psx_vram_shadow[(py) * 1024 + (px)]; \
+    uint16_t _exp = (uint16_t)(expected_16); \
+    if (_got == _exp) { \
+        printf("    %-16s: VRAM(%d,%d)=0x%04x OK\n", gp_ctx.name, (px), (py), _got); \
+    } else { \
+        printf("  [FAIL] %-16s: VRAM(%d,%d)=0x%04x expected 0x%04x\n", \
+               gp_ctx.name, (px), (py), _got, _exp); \
+        gp_ctx.fail_count++; \
+    } \
+} while(0)
 
 #endif /* PLAYGROUND_GPU_H */

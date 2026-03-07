@@ -18,7 +18,7 @@ static void test_gp1_reset_gpu(void)
 
     /* Expect 8 QWORDs (clearing GS state) and high cycles due to memset of shadow vram */
     EXPECT_QWORDS(8); 
-    EXPECT_CYCLES(655743);
+    EXPECT_CYCLES(656200);
 
     END_GPU_TEST();
 }

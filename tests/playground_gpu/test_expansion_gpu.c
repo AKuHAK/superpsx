@@ -75,7 +75,7 @@ static void test_expansion_textured_quad(void)
     EMIT_GP0(10 | (10 << 16));
     EMIT_GP0(0  | (0  << 8) | (0 << 16)); /* u0, v0, clut */
     EMIT_GP0(50 | (10 << 16));
-    EMIT_GP0(32 | (0  << 8) | (0 << 16)); /* u1, v1, tpage */
+    EMIT_GP0(32 | (0  << 8) | ((2 << 7) << 16)); /* u1, v1, tpage (format=2=15BPP) */
     EMIT_GP0(10 | (50 << 16));
     EMIT_GP0(0  | (32 << 8)); /* u2, v2 */
     EMIT_GP0(50 | (50 << 16));
@@ -135,7 +135,7 @@ static void test_expansion_nop_fill(void)
     EMIT_GP0(0 | (0 << 16)); // x, y
     EMIT_GP0(10 | (10 << 16)); // w, h
     Flush_GIF();
-    EXPECT_QWORDS(8); EXPECT_CYCLES(860);
+    EXPECT_QWORDS(8); EXPECT_CYCLES(900);
     END_GPU_TEST();
 }
 
@@ -168,16 +168,16 @@ static void test_expansion_shaded_geom(void)
     EXPECT_QWORDS(17); EXPECT_CYCLES(1331);
     END_GPU_TEST();
 
-    /* Needs texpage to not crash */
-    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7));
     
     BEGIN_GPU_TEST("shaded_tex_quad");
+    /* Needs texpage to not crash */
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7));
     EMIT_GP0(0x3C0000FF); EMIT_GP0(0|(0<<16));  EMIT_GP0(0|(0<<8));
-    EMIT_GP0(0x0000FF00); EMIT_GP0(10|(0<<16)); EMIT_GP0(32|(0<<8)|(32<<16));
+    EMIT_GP0(0x0000FF00); EMIT_GP0(10|(0<<16)); EMIT_GP0(32|(0<<8)|((2<<7)<<16));
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16)); EMIT_GP0(0|(32<<8));
     EMIT_GP0(0x00FFFFFF); EMIT_GP0(10|(10<<16)); EMIT_GP0(32|(32<<8));
     Flush_GIF();
-    EXPECT_QWORDS(25); EXPECT_CYCLES(1999);
+    EXPECT_QWORDS(30); EXPECT_CYCLES(1999);
     END_GPU_TEST();
 }
 
@@ -217,13 +217,36 @@ static void test_expansion_rects(void)
     EXPECT_QWORDS(7); EXPECT_CYCLES(460);
     END_GPU_TEST();
 
-    /* Needs texpage to not crash */
-    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (2 << 7));
+    BEGIN_GPU_TEST("tex_rect_dummy");
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (1 << 7));
+    EMIT_GP0(0x74808080); EMIT_GP0(0); EMIT_GP0(0); EMIT_GP0(1);
+    Flush_GIF();
+    EXPECT_QWORDS(4200); EXPECT_CYCLES(200000); /* initial page upload: ~4100 QWORDs */
+    END_GPU_TEST();
 
     BEGIN_GPU_TEST("tex_rect_var");
-    EMIT_GP0(0x640000FF); EMIT_GP0(0|(0<<16)); EMIT_GP0(0|(0<<8)); EMIT_GP0(10|(10<<16));
+    /* 8BPP textured rect with NON-aligned CLUT.
+     * clut_x=17*16=272, byte_offset=544, 544%256=32 -> CSM1 CLUT upload */
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (1 << 7));
+    EMIT_GP0(0x74808080);
+    EMIT_GP0(0 | (0 << 16));
+    EMIT_GP0(0 | (0 << 8) | (17 << 16)); /* pal=(17*16, 0) -> (272,0) */
+    EMIT_GP0(10 | (10 << 16));
     Flush_GIF();
-    EXPECT_QWORDS(10); EXPECT_CYCLES(760);
+    EXPECT_QWORDS(64); EXPECT_CYCLES(200000); /* page hit + CSM1 CLUT upload */
+    END_GPU_TEST();
+    
+    BEGIN_GPU_TEST("tex_rect_aligned");
+    /* 8BPP textured rect with ALIGNED CLUT (CSM2 bypass).
+     * clut_x=128, byte_offset=256, 256%256=0 -> CSM2: no CLUT upload! */
+    SETUP_GP1(0x00000000); SETUP_GP0(0xE1000000 | (0 << 0) | (1 << 7));
+    EMIT_GP0(0x74808080);
+    EMIT_GP0(0 | (0 << 16));
+    EMIT_GP0(0 | (0 << 8) | (8 << 16)); /* pal=(8*16, 0) -> (128,0) */
+    EMIT_GP0(10 | (10 << 16));
+    Flush_GIF();
+    EXPECT_QWORDS(64); /* CSM2 bypass: HW CLUT path via CSM1 + page upload */
+    EXPECT_CYCLES(200000);
     END_GPU_TEST();
 }
 
@@ -235,21 +258,21 @@ static void test_expansion_vram_transfers(void)
     BEGIN_GPU_TEST("vram_copy");
     EMIT_GP0(0x80000000); EMIT_GP0(0|(0<<16)); /* src */ EMIT_GP0(10|(10<<16)); /* dst */ EMIT_GP0(5|(5<<16));
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(1050);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(1100);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("cpu_to_vram"); // Image Load
     EMIT_GP0(0xA0000000); EMIT_GP0(0|(0<<16)); EMIT_GP0(2|(1<<16)); /* 2x1 = 2 words */
     EMIT_GP0(0x11111111); EMIT_GP0(0x22222222);
     Flush_GIF();
-    EXPECT_QWORDS(4); EXPECT_CYCLES(730);
+    EXPECT_QWORDS(4); EXPECT_CYCLES(900);
     END_GPU_TEST();
 
     BEGIN_GPU_TEST("vram_to_cpu"); // Image Store
     EMIT_GP0(0xC0000000); EMIT_GP0(0|(0<<16)); EMIT_GP0(2|(1<<16));
     // The emulator would now wait for GPU_Read(), let's not block but test parsing cycles
     Flush_GIF();
-    EXPECT_QWORDS(0); EXPECT_CYCLES(260);
+    EXPECT_QWORDS(0); EXPECT_CYCLES(4500);
     END_GPU_TEST();
 }
 

@@ -106,18 +106,85 @@ SchedEvent sched_events[SCHED_EVENT_COUNT];
 
 /* --- MOCKS --- */
 
+/* ── GIF Register Capture ───────────────────────────────────────── */
+gif_reg_capture_t gif_captures[GIF_CAPTURE_MAX];
+int gif_capture_count = 0;
+
+/* Internal: scan a range of the GIF buffer for AD-mode register writes */
+static void gif_scan_range(gif_qword_t *start, gif_qword_t *end)
+{
+    gif_qword_t *p = start;
+    while (p < end && gif_capture_count < GIF_CAPTURE_MAX) {
+        uint64_t tag_lo = p->d0;
+        uint64_t tag_hi = p->d1;
+        p++;
+
+        int nloop = tag_lo & 0x7FFF;
+        int flg = (tag_lo >> 58) & 3;
+        int nreg = (tag_lo >> 60) & 0xF;
+        if (nreg == 0) nreg = 16;
+
+        if (flg == 0 && nreg == 1 && tag_hi == GIF_REG_AD) {
+            /* A+D mode: extract register writes */
+            for (int i = 0; i < nloop && p < end; i++) {
+                uint64_t data = p->d0;
+                uint64_t reg = p->d1 & 0xFF;
+                p++;
+                if (gif_capture_count < GIF_CAPTURE_MAX) {
+                    gif_captures[gif_capture_count].data = data;
+                    gif_captures[gif_capture_count].reg = (uint16_t)reg;
+                    gif_capture_count++;
+                }
+            }
+        } else if (flg == 2) {
+            /* IMAGE mode: raw pixel data, skip NLOOP quadwords */
+            p += nloop;
+        } else {
+            /* PACKED (FLG=0) or REGLIST (FLG=1): skip NLOOP * NREG qwords */
+            int skip = nloop * nreg;
+            p += skip;
+        }
+    }
+}
+
 /* 
  * The single most important mock: Flush_GIF
  * Instead of kicking off a DMA chain via ps2_drivers, we just measure
  * the length of the packet being flushed to determine the "Data Expansion".
+ * Also captures register writes for the deep test battery.
  */
 void Flush_GIF(void)
 {
     if (fast_gif_ptr > MOCK_GIF_BUFFER_START) {
+        /* Capture registers before resetting the pointer */
+        gif_scan_range(MOCK_GIF_BUFFER_START, fast_gif_ptr);
         /* Add to the current test context metrics */
         gp_ctx.qwords_generated += (fast_gif_ptr - MOCK_GIF_BUFFER_START);
     }
     /* "Flush" by resetting the pointer to the start of our dummy buffer */
+    fast_gif_ptr = MOCK_GIF_BUFFER_START;
+}
+
+/*
+ * Scan the GIF buffer from base to fast_gif_ptr (for any unflushed data).
+ * Combined with the auto-capture in Flush_GIF, this gives a complete picture.
+ */
+int gp_gif_scan(void)
+{
+    /* Scan any unflushed data still in the buffer */
+    if (fast_gif_ptr > MOCK_GIF_BUFFER_START) {
+        gif_scan_range(MOCK_GIF_BUFFER_START, fast_gif_ptr);
+    }
+    return gif_capture_count;
+}
+
+/* Reset GIF pointer & counter without touching GPU state */
+void gp_gif_reset_counter(void)
+{
+    gp_ctx.qwords_generated = 0;
+    gp_ctx.eecycles_used = 0;
+    gp_ctx.eeinsns_used = 0;
+    gif_capture_count = 0;
     fast_gif_ptr = MOCK_GIF_BUFFER_START;
 }
 

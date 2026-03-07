@@ -67,7 +67,7 @@ static uint32_t cache_gp1_06 = 0xFFFFFFFF;
 static uint32_t cache_gp1_07 = 0xFFFFFFFF;
 static uint32_t cache_gp1_08 = 0xFFFFFFFF;
 
-static void clear_gpu_param_cache(void)
+void clear_gpu_param_cache(void)
 {
     cache_e1 = 0xFFFFFFFF;
     cache_e3 = 0xFFFFFFFF;

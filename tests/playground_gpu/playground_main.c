@@ -22,6 +22,9 @@ void gp_reset_state(void)
     memset(&gp_ctx, 0, sizeof(gp_ctx));
     mock_gif_qwords_written = 0;
 
+    /* Reset GIF register captures */
+    gif_capture_count = 0;
+
     /* Reset global emulator mock state */
     gpu_stat = 0x14802000;
     gpu_read = 0;
@@ -39,6 +42,8 @@ void gp_reset_state(void)
     psx_ram = dummy_psx_ram;
 
     /* Invalidate GP0/GP1 caches to ensure full translation paths */
+    extern void clear_gpu_param_cache(void);
+    clear_gpu_param_cache();
     Prim_InvalidateGSState();
     Prim_InvalidateTexCache();
     
@@ -72,6 +77,8 @@ int main(void)
     gp_run_expansion_tests();
     gp_run_expansion_gp1_tests();
     gp_run_clut_tests();
+    gp_run_state_tests();
+    gp_run_vram_tests();
 
     printf("\n====================================================================\n");
     printf("Test Results: %d passed, %d failed (Total %d)\n",

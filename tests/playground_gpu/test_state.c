@@ -960,6 +960,64 @@ static void test_g8a_clut_cache_expansion(void)
 }
 
 /* ================================================================
+ *  G6: FillRect SCISSOR Skip Tests
+ *
+ *  FillRect currently always expands SCISSOR to full VRAM and restores
+ *  it afterwards (2 extra SCISSOR_1 writes = 3 extra QW per fill).
+ *  When the fill rectangle fits entirely within draw_clip, this is
+ *  unnecessary — the existing SCISSOR already allows the fill through.
+ *
+ *  G6a: fill within clip → NO SCISSOR_1 emitted (saves 3 QW)
+ *  G6b: fill outside clip → SCISSOR_1 emitted (regression guard)
+ * ================================================================ */
+
+/* G6a: FillRect within draw_clip → no SCISSOR_1 */
+static void test_g6a_fillrect_in_clip(void)
+{
+    BEGIN_GPU_TEST("g6a_fill_in_clip");
+
+    /* draw_clip defaults to 0,0,640,480 — FillRect at (0,0,16,16) is inside */
+    draw_clip_x1 = 0;
+    draw_clip_y1 = 0;
+    draw_clip_x2 = 640;
+    draw_clip_y2 = 480;
+
+    gp_gif_reset_counter();
+    emit_fillrect(0, 0, 16, 16, 0xFF0000);
+    gp_gif_scan();
+
+    EXPECT_NO_GIF_REG("SCISSOR_1", GS_REG_SCISSOR_1);
+
+    END_GPU_TEST();
+}
+
+/* G6b: FillRect outside draw_clip → SCISSOR_1 must appear */
+static void test_g6b_fillrect_out_clip(void)
+{
+    BEGIN_GPU_TEST("g6b_fill_out_clip");
+
+    /* Narrow draw_clip to 0,0,320,240 — FillRect at (500,300,16,16) is outside */
+    draw_clip_x1 = 0;
+    draw_clip_y1 = 0;
+    draw_clip_x2 = 320;
+    draw_clip_y2 = 240;
+
+    gp_gif_reset_counter();
+    emit_fillrect(500, 300, 16, 16, 0x00FF00);
+    gp_gif_scan();
+
+    EXPECT_GIF_REG("SCISSOR_1", GS_REG_SCISSOR_1);
+
+    /* Restore draw_clip to avoid side-effects on subsequent tests */
+    draw_clip_x1 = 0;
+    draw_clip_y1 = 0;
+    draw_clip_x2 = 640;
+    draw_clip_y2 = 480;
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -1003,4 +1061,8 @@ void gp_run_state_tests(void)
 
     printf("\n--- G8: CLUT Cache Expansion Tests ---\n");
     test_g8a_clut_cache_expansion();     /* G8a — 5 CLUTs, return to #0 */
+
+    printf("\n--- G6: FillRect SCISSOR Skip Tests ---\n");
+    test_g6a_fillrect_in_clip();         /* G6a — fill within clip, no SCISSOR */
+    test_g6b_fillrect_out_clip();        /* G6b — fill outside clip, SCISSOR emitted */
 }

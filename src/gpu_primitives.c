@@ -1365,25 +1365,40 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         /* ── Pixel fill estimate for fill-rect ── */
         gpu_estimated_pixels += (uint32_t)w * (uint32_t)h;
 
-        Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
-        Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
-        Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM);
         uint32_t r = color & 0xFF;
         uint32_t g = (color >> 8) & 0xFF;
         uint32_t b = (color >> 16) & 0xFF;
-        Push_GIF_Data(GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000), GS_REG_RGBAQ);
         int32_t x1 = (x + 2048) << 4;
         int32_t y1 = (y + 2048) << 4;
         int32_t x2 = (x + w + 2048) << 4;
         int32_t y2 = (y + h + 2048) << 4;
-        Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
-        Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
 
-        // Restore original scissor (PSX E4 is exclusive, GS SCISSOR is inclusive)
-        uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
-        uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
-        Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
-        Push_GIF_Data(GS_SET_SCISSOR(draw_clip_x1, sc_x2, draw_clip_y1, sc_y2), GS_REG_SCISSOR_1);
+        /* G6: Skip SCISSOR expand/restore when fill fits within draw_clip */
+        int clip_ok = (x >= draw_clip_x1) && ((x + w) <= draw_clip_x2) &&
+                      (y >= draw_clip_y1) && ((y + h) <= draw_clip_y2);
+
+        if (clip_ok) {
+            /* Fill fits within current SCISSOR — 4 QW packet */
+            Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM);
+            Push_GIF_Data(GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000), GS_REG_RGBAQ);
+            Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
+            Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
+        } else {
+            /* Fill outside draw_clip — expand SCISSOR to full VRAM, then restore */
+            Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
+            Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM);
+            Push_GIF_Data(GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000), GS_REG_RGBAQ);
+            Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
+            Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
+
+            /* Restore original scissor (PSX E4 is exclusive, GS SCISSOR is inclusive) */
+            uint64_t sc_x2 = (draw_clip_x2 > 0) ? (draw_clip_x2 - 1) : 0;
+            uint64_t sc_y2 = (draw_clip_y2 > 0) ? (draw_clip_y2 - 1) : 0;
+            Push_GIF_Tag(GIF_TAG_LO(1, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_SET_SCISSOR(draw_clip_x1, sc_x2, draw_clip_y1, sc_y2), GS_REG_SCISSOR_1);
+        }
 
         // Update shadow VRAM for filled area
         if (psx_vram_shadow)

@@ -159,7 +159,7 @@ static int clut_robin_idx = 0;
  * are eliminated in typical games (same palette drawn many times).
  * Set to 0 to disable (always upload, like pre-G1 behavior). */
 #define ENABLE_CLUT_CONTENT_CACHE 1
-#define CLUT_CONTENT_CACHE_SIZE 4
+#define CLUT_CONTENT_CACHE_SIZE 16
 
 static struct {
     int      clut_x, clut_y;
@@ -236,6 +236,9 @@ void Tex_Cache_Init(void)
     memset(&tex_stats, 0, sizeof(tex_stats));
     tex_stats.vram_gen_at_start = vram_gen_counter;
 }
+
+/* Query CLUT upload count for testing */
+uint32_t Tex_Cache_GetClutUploads(void) { return tex_stats.clut_uploads; }
 
 /* ═══════════════════════════════════════════════════════════════════
  *  HW CLUT Upload Functions

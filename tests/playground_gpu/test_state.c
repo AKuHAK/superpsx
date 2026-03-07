@@ -904,6 +904,62 @@ static void test_g3b_eviction(void)
 }
 
 /* ================================================================
+ *  G8: CLUT content cache expansion (4→16 entries)
+ *
+ *  Draw 5 different CLUTs whose hashes collide in a 4-entry cache
+ *  but don't in 16-entry.  Then return to CLUT #0.
+ *
+ *  With 4 entries: y=480 and y=484 hash to same index → collision.
+ *    Return-to-480 causes CLUT re-upload.
+ *  With 16 entries: distinct indices → no collision → cache HIT.
+ *
+ *  Observable: clut_uploads count after the return draw.
+ * ================================================================ */
+
+static void test_g8a_clut_cache_expansion(void)
+{
+    BEGIN_GPU_TEST("g8a_clut_exp");
+
+    Tex_Cache_Init();
+    setup_texture_data(0, 0, 0, 480, 0);  /* tex page 0, CLUT at (0,480) */
+    /* Write 5 CLUTs at y=480,481,482,483,484 */
+    if (psx_vram_shadow) {
+        for (int k = 0; k < 5; k++)
+            for (int i = 0; i < 16; i++)
+                psx_vram_shadow[(480 + k) * 1024 + i] = (uint16_t)(0x1000 + k * 0x100 + i);
+    }
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256);      /* tex page */
+    Tex_Cache_DirtyRegion(0, 480, 16, 5);       /* all 5 CLUTs */
+
+    /* Draw all 5 CLUTs (cold start) */
+    for (int k = 0; k < 5; k++) {
+        emit_textured_quad(0, 0, 0, 480 + k);
+    }
+    gp_gif_reset_counter();
+
+    /* Record clut_uploads before return draw */
+    uint32_t uploads_before = Tex_Cache_GetClutUploads();
+
+    /* Return to CLUT #0 (y=480) */
+    emit_textured_quad(0, 0, 0, 480);
+
+    uint32_t uploads_after = Tex_Cache_GetClutUploads();
+    uint32_t new_uploads = uploads_after - uploads_before;
+
+    /* G8: CLUT cache has 16 entries → y=480 still cached → 0 new uploads */
+    if (new_uploads == 0) {
+        printf("    %-16s: clut_uploads=0 (cache HIT) OK\n", gp_ctx.name);
+    } else {
+        printf("  [FAIL] %-16s: clut_uploads=%u (expected 0, cache MISS)\n",
+               gp_ctx.name, (unsigned)new_uploads);
+        gp_ctx.fail_count++;
+    }
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -944,4 +1000,7 @@ void gp_run_state_tests(void)
     printf("\n--- G3: Multi-entry Tex Cache Tests ---\n");
     test_g3a_aba_pattern();              /* G3a — A→B→A HIT */
     test_g3b_eviction();                 /* G3b — 5 textures, A evicted */
+
+    printf("\n--- G8: CLUT Cache Expansion Tests ---\n");
+    test_g8a_clut_cache_expansion();     /* G8a — 5 CLUTs, return to #0 */
 }

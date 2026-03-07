@@ -485,44 +485,185 @@ static void emit_ncds_core(int v, int sf, int lm)
     emit_ir_sat_store(lm);                 /* FLAG=0 */
 }
 
-/* Emit RTPS core for vertex v: RT×V+TR → MAC/IR → push_sz → C-call project.
- * Inlines the matrix multiply and SZ FIFO push; delegates UNR division,
- * screen projection, SXY push and depth cueing to GTE_RTPS_Project (C).
- * last=1 → also compute MAC0/IR0 (depth cueing). */
+/* Emit RTPS core for vertex v: fully inline — matrix multiply, SZ push,
+ * UNR division, screen projection, SXY push, and depth cueing.
+ * last=1 → also compute MAC0/IR0 (depth cueing).
+ *
+ * Register plan (post-mvmva):
+ *   T8/T9/AT = scratch, V0 = H, V1 = cond(h<sz3*2),
+ *   A0 = n→div_result, A1 = z/scratch, A2 = u_val, A3 = table_base
+ *
+ * MIPS encodings used (no EMIT_ macro):
+ *   SLLV  rd,rt,rs: MK_R(0, rs, rt, rd, 0, 0x04)
+ *   SLTIU rt,rs,imm: MK_I(0x0B, rs, rt, imm)
+ *   SLTU  rd,rs,rt: MK_R(0, rs, rt, rd, 0, 0x2B)
+ *   SLT   rd,rs,rt: MK_R(0, rs, rt, rd, 0, 0x2A)
+ *   MULTU rs,rt:    MK_R(0, rs, rt, 0, 0, 0x19)
+ *   XORI  rt,rs,imm: MK_I(0x0E, rs, rt, imm)
+ *   SRL   rd,rt,sa: MK_R(0, 0, rt, rd, sa, 0x02)
+ */
 static void emit_rtps_core(int v, int sf, int lm, int last)
 {
     /* Step 1: RT × V + TR → MAC1-3, IR1-3 (inline matrix multiply) */
     emit_inline_mvmva(0, v, 0, sf, lm);
 
     /* Step 2: Push SZ FIFO inline.
-     * SZ3 = saturate_sz( sf ? MAC3 : MAC3>>12 )
-     * MAC3 is stored in memory by emit_inline_mvmva. */
+     * SZ3 = saturate_sz( sf ? MAC3 : MAC3>>12 ) */
     EMIT_LW(REG_T8, CPU_CP2_DATA(27), REG_S0);         /* T8 = MAC3 */
-    if (!sf) {
+    if (!sf)
         EMIT_SRA(REG_T8, REG_T8, 12);                  /* sf=0: need raw>>12 */
-    }
     /* Saturate SZ to [0, 0xFFFF] */
     emit(MK_R(0, REG_T8, REG_ZERO, REG_AT, 0, 0x2A)); /* SLT AT, T8, $0 */
     EMIT_MOVN(REG_T8, REG_ZERO, REG_AT);               /* neg → 0 */
-    EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);                /* T9 = 0xFFFF */
+    EMIT_ORI(REG_T9, REG_ZERO, 0xFFFF);
     emit(MK_R(0, REG_T9, REG_T8, REG_AT, 0, 0x2A));   /* SLT AT, T9, T8 */
     EMIT_MOVN(REG_T8, REG_T9, REG_AT);                 /* >0xFFFF → 0xFFFF */
-    /* Shift FIFO: SZ0←SZ1, SZ1←SZ2, SZ2←old SZ3, SZ3←new */
-    EMIT_LW(REG_V0, CPU_CP2_DATA(17), REG_S0);         /* V0 = SZ1 */
-    EMIT_LW(REG_V1, CPU_CP2_DATA(18), REG_S0);         /* V1 = SZ2 */
-    EMIT_LW(REG_A0, CPU_CP2_DATA(19), REG_S0);         /* A0 = old SZ3 */
+    /* Shift FIFO */
+    EMIT_LW(REG_V0, CPU_CP2_DATA(17), REG_S0);
+    EMIT_LW(REG_V1, CPU_CP2_DATA(18), REG_S0);
+    EMIT_LW(REG_A0, CPU_CP2_DATA(19), REG_S0);
     EMIT_SW(REG_V0, CPU_CP2_DATA(16), REG_S0);         /* SZ0 = SZ1 */
     EMIT_SW(REG_V1, CPU_CP2_DATA(17), REG_S0);         /* SZ1 = SZ2 */
     EMIT_SW(REG_A0, CPU_CP2_DATA(18), REG_S0);         /* SZ2 = old SZ3 */
     EMIT_SW(REG_T8, CPU_CP2_DATA(19), REG_S0);         /* SZ3 = new */
 
-    /* Step 3: Division + screen projection + SXY push + depth cue (C call).
-     * GTE_RTPS_Project reads H, SZ3, IR1, IR2, OFX, OFY, DQA, DQB from cpu. */
-    EMIT_MOVE(REG_A0, REG_S0);
-    emit_load_imm32(REG_A1, last);
-    emit_call_c_lite((uint32_t)GTE_RTPS_Project);
+    /* Step 3: UNR perspective division — fully inline.
+     * T8 = SZ3 (saturated).  Compute div_result → A0 */
+    EMIT_LH(REG_V0, CPU_CP2_CTRL(26), REG_S0);         /* V0 = (int16)H */
+    EMIT_ANDI(REG_V0, REG_V0, 0xFFFF);                  /* V0 = (uint16)H */
 
-    /* FLAG=0 (inline path skips flag tracking) */
+    /* Check h < sz3*2 */
+    EMIT_SLL(REG_T9, REG_T8, 1);                        /* T9 = sz3 * 2 */
+    emit(MK_R(0, REG_V0, REG_T9, REG_V1, 0, 0x2B));    /* SLTU V1, H, sz3*2 */
+
+    /* CLZ16: normalize T8 (d) so bit 15 is set, count leading zeros in A1 */
+    /* Guard: if d==0, set d=1 to avoid garbage table index (result discarded via MOVZ) */
+    EMIT_ORI(REG_AT, REG_ZERO, 1);
+    EMIT_MOVZ(REG_T8, REG_AT, REG_T8);                  /* if d==0, d=1 */
+    EMIT_ORI(REG_A1, REG_ZERO, 0);                      /* z = 0 */
+    /* Step 1: d < 0x100 → z+=8, d<<=8 */
+    emit(MK_I(0x0B, REG_T8, REG_AT, 0x100));            /* SLTIU AT, T8, 0x100 */
+    EMIT_SLL(REG_T9, REG_AT, 3);                        /* T9 = 0 or 8 */
+    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
+    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
+    /* Step 2: d < 0x1000 → z+=4, d<<=4 */
+    emit(MK_I(0x0B, REG_T8, REG_AT, 0x1000));           /* SLTIU AT, T8, 0x1000 */
+    EMIT_SLL(REG_T9, REG_AT, 2);
+    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
+    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
+    /* Step 3: d < 0x4000 → z+=2, d<<=2 */
+    emit(MK_I(0x0B, REG_T8, REG_AT, 0x4000));           /* SLTIU AT, T8, 0x4000 */
+    EMIT_SLL(REG_T9, REG_AT, 1);
+    EMIT_ADDU(REG_A1, REG_A1, REG_T9);
+    emit(MK_R(0, REG_T9, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, T9 */
+    /* Step 4: bit 15 not set → z+=1, d<<=1 */
+    emit(MK_R(0, 0, REG_T8, REG_AT, 15, 0x02));        /* SRL AT, T8, 15 */
+    emit(MK_I(0x0E, REG_AT, REG_AT, 1));                /* XORI AT, AT, 1 */
+    EMIT_ADDU(REG_A1, REG_A1, REG_AT);
+    emit(MK_R(0, REG_AT, REG_T8, REG_T8, 0, 0x04));    /* SLLV T8, T8, AT */
+
+    /* n = h << z */
+    emit(MK_R(0, REG_A1, REG_V0, REG_A0, 0, 0x04));    /* SLLV A0, V0, A1 */
+
+    /* Table lookup: u_val = unr_table[(d-0x7FC0)>>7] + 0x101 */
+    EMIT_ADDIU(REG_T9, REG_T8, -0x7FC0);                /* T9 = d - 0x7FC0 */
+    emit(MK_R(0, 0, REG_T9, REG_T9, 7, 0x02));         /* SRL T9, T9, 7 */
+    emit_load_imm32(REG_A3, (uint32_t)(uintptr_t)gte_unr_table);
+    EMIT_ADDU(REG_T9, REG_T9, REG_A3);                  /* T9 = &table[index] */
+    EMIT_LBU(REG_A2, 0, REG_T9);                        /* A2 = table[index] */
+    EMIT_ADDIU(REG_A2, REG_A2, 0x101);                  /* A2 = u_val */
+
+    /* Newton step 1: du = (0x2000080 - d*u_val) >> 8 */
+    emit(MK_R(0, REG_T8, REG_A2, 0, 0, 0x19));         /* MULTU T8, A2 */
+    emit_load_imm32(REG_T9, 0x2000080);                 /* T9 = 0x2000080 */
+    EMIT_MFLO(REG_T8);                                  /* T8 = d * u_val */
+    EMIT_SUBU(REG_T8, REG_T9, REG_T8);                  /* T8 = 0x2000080 - product */
+    emit(MK_R(0, 0, REG_T8, REG_T8, 8, 0x02));         /* SRL T8, T8, 8 */
+
+    /* Newton step 2: du = (0x80 + du*u_val) >> 8 */
+    emit(MK_R(0, REG_T8, REG_A2, 0, 0, 0x19));         /* MULTU T8, A2 */
+    EMIT_MFLO(REG_T8);                                  /* T8 = du * u_val */
+    EMIT_ADDIU(REG_T8, REG_T8, 0x80);                   /* T8 += 0x80 */
+    emit(MK_R(0, 0, REG_T8, REG_T8, 8, 0x02));         /* SRL T8, T8, 8 */
+
+    /* Final: result = (n * du + 0x8000) >> 16, clamp to 0x1FFFF */
+    emit(MK_R(0, REG_A0, REG_T8, 0, 0, 0x19));         /* MULTU A0, T8 */
+    EMIT_MFHI(REG_A1);                                  /* A1 = upper 32 */
+    EMIT_MFLO(REG_A0);                                  /* A0 = lower 32 */
+    EMIT_ORI(REG_T9, REG_ZERO, 0x8000);                 /* T9 = 0x8000 */
+    EMIT_ADDU(REG_A0, REG_A0, REG_T9);                  /* A0 += 0x8000 */
+    emit(MK_R(0, REG_A0, REG_T9, REG_AT, 0, 0x2B));    /* SLTU AT, A0, 0x8000 (carry) */
+    EMIT_ADDU(REG_A1, REG_A1, REG_AT);                  /* A1 += carry */
+    emit(MK_R(0, 0, REG_A0, REG_A0, 16, 0x02));        /* SRL A0, A0, 16 */
+    EMIT_SLL(REG_T9, REG_A1, 16);                       /* T9 = upper << 16 */
+    EMIT_OR(REG_A0, REG_A0, REG_T9);                    /* A0 = final result */
+    /* Clamp to 0x1FFFF */
+    emit_load_imm32(REG_T8, 0x1FFFF);                   /* T8 = 0x1FFFF */
+    emit(MK_R(0, REG_T8, REG_A0, REG_AT, 0, 0x2B));    /* SLTU AT, 0x1FFFF, result */
+    EMIT_MOVN(REG_A0, REG_T8, REG_AT);                  /* if exceeded, clamp */
+    /* Handle h >= sz3*2: force 0x1FFFF (V1=0 means h>=sz3*2) */
+    EMIT_MOVZ(REG_A0, REG_T8, REG_V1);                  /* if !cond: A0 = 0x1FFFF */
+
+    /* Step 4: Screen projection (32-bit).
+     * SX = (div_result * IR1 + OFX) >> 16
+     * SY = (div_result * IR2 + OFY) >> 16  */
+    EMIT_LH(REG_T8, CPU_CP2_DATA(9), REG_S0);           /* T8 = IR1 */
+    EMIT_LW(REG_T9, CPU_CP2_CTRL(24), REG_S0);          /* T9 = OFX */
+    EMIT_MULT(REG_A0, REG_T8);                           /* LO = div * IR1 */
+    EMIT_MFLO(REG_V0);
+    EMIT_ADDU(REG_V0, REG_V0, REG_T9);                   /* V0 = div*IR1 + OFX */
+    EMIT_SRA(REG_V0, REG_V0, 16);                        /* V0 = SX */
+
+    EMIT_LH(REG_T8, CPU_CP2_DATA(10), REG_S0);          /* T8 = IR2 */
+    EMIT_LW(REG_T9, CPU_CP2_CTRL(25), REG_S0);          /* T9 = OFY */
+    EMIT_MULT(REG_A0, REG_T8);                           /* LO = div * IR2 */
+    EMIT_MFLO(REG_V1);
+    EMIT_ADDU(REG_V1, REG_V1, REG_T9);                   /* V1 = div*IR2 + OFY */
+    EMIT_SRA(REG_V1, REG_V1, 16);                        /* V1 = SY */
+
+    /* Step 5: Push SXY FIFO + saturate to [-0x400, 0x3FF] */
+    EMIT_LW(REG_T8, CPU_CP2_DATA(13), REG_S0);
+    EMIT_LW(REG_T9, CPU_CP2_DATA(14), REG_S0);
+    EMIT_SW(REG_T8, CPU_CP2_DATA(12), REG_S0);          /* SXY0 = SXY1 */
+    EMIT_SW(REG_T9, CPU_CP2_DATA(13), REG_S0);          /* SXY1 = SXY2 */
+    /* Saturate SX */
+    EMIT_ADDIU(REG_T8, REG_ZERO, -0x400);               /* T8 = -1024 */
+    EMIT_ORI(REG_T9, REG_ZERO, 0x3FF);                  /* T9 = 1023 */
+    emit(MK_R(0, REG_V0, REG_T8, REG_AT, 0, 0x2A));    /* SLT AT, SX, -0x400 */
+    EMIT_MOVN(REG_V0, REG_T8, REG_AT);
+    emit(MK_R(0, REG_T9, REG_V0, REG_AT, 0, 0x2A));    /* SLT AT, 0x3FF, SX */
+    EMIT_MOVN(REG_V0, REG_T9, REG_AT);
+    /* Saturate SY */
+    emit(MK_R(0, REG_V1, REG_T8, REG_AT, 0, 0x2A));    /* SLT AT, SY, -0x400 */
+    EMIT_MOVN(REG_V1, REG_T8, REG_AT);
+    emit(MK_R(0, REG_T9, REG_V1, REG_AT, 0, 0x2A));    /* SLT AT, 0x3FF, SY */
+    EMIT_MOVN(REG_V1, REG_T9, REG_AT);
+    /* Pack SXY2 = (uint16)SX | ((uint16)SY << 16) */
+    EMIT_ANDI(REG_V0, REG_V0, 0xFFFF);
+    EMIT_SLL(REG_V1, REG_V1, 16);
+    EMIT_OR(REG_V0, REG_V0, REG_V1);
+    EMIT_SW(REG_V0, CPU_CP2_DATA(14), REG_S0);          /* SXY2 */
+
+    /* Step 6: Depth cueing (last vertex only) */
+    if (last) {
+        /* MAC0 = DQA * div_result + DQB */
+        EMIT_LH(REG_T8, CPU_CP2_CTRL(27), REG_S0);     /* T8 = DQA */
+        EMIT_MULT(REG_T8, REG_A0);                      /* LO = DQA * div */
+        EMIT_MFLO(REG_T8);
+        EMIT_LW(REG_T9, CPU_CP2_CTRL(28), REG_S0);     /* T9 = DQB */
+        EMIT_ADDU(REG_T8, REG_T8, REG_T9);              /* T8 = MAC0 */
+        EMIT_SW(REG_T8, CPU_CP2_DATA(24), REG_S0);      /* store MAC0 */
+        /* IR0 = saturate(MAC0 >> 12, 0, 0x1000) */
+        EMIT_SRA(REG_T9, REG_T8, 12);
+        emit(MK_R(0, REG_T9, REG_ZERO, REG_AT, 0, 0x2A)); /* SLT AT, T9, $0 */
+        EMIT_MOVN(REG_T9, REG_ZERO, REG_AT);            /* neg → 0 */
+        EMIT_ORI(REG_T8, REG_ZERO, 0x1000);
+        emit(MK_R(0, REG_T8, REG_T9, REG_AT, 0, 0x2A)); /* SLT AT, 0x1000, T9 */
+        EMIT_MOVN(REG_T9, REG_T8, REG_AT);              /* >0x1000 → 0x1000 */
+        EMIT_SW(REG_T9, CPU_CP2_DATA(8), REG_S0);       /* store IR0 */
+    }
+
+    /* FLAG=0 */
     EMIT_SW(REG_ZERO, CPU_CP2_CTRL(31), REG_S0);
 }
 

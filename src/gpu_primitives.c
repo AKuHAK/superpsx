@@ -1429,7 +1429,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     }
     else if ((cmd & 0xE0) == 0x40)
     {                       // Line
-        gs_state.valid = 0; /* Line path does unconditional state writes */
+        /* G7: Lines only emit ALPHA_1 (semi-trans) + PRIM + vertices.
+         * They don't touch TEX0/TEST/DTHE/CLAMP/TEXCLUT, so keep
+         * gs_state valid and just update alpha when semi-trans. */
         int is_shaded = (cmd & 0x10) != 0;
         int is_semi_trans = (cmd & 0x02) != 0;
 
@@ -1448,6 +1450,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int16_t y1 = (int16_t)(xy1 >> 16);
 
         Emit_Line_Segment_AD(x0, y0, color0, x1, y1, color1, is_shaded, is_semi_trans);
+
+        /* G7: Update gs_state.alpha so next primitive's lazy check works */
+        if (is_semi_trans)
+            gs_state.alpha = Get_Alpha_Reg(semi_trans_mode);
+
         return idx;
     }
     return 1; /* Unknown command — consume 1 word */

@@ -106,6 +106,22 @@ static void emit_flat_rect(uint32_t color)
     EMIT_GP0(32 | (32 << 16));   /* w=32, h=32 */
 }
 
+/* Emit a flat opaque line: GP0 cmd 0x40 */
+static void emit_flat_line(uint32_t color)
+{
+    EMIT_GP0(0x40000000 | (color & 0xFFFFFF));
+    EMIT_GP0(10 | (10 << 16));   /* v0: 10,10 */
+    EMIT_GP0(50 | (50 << 16));   /* v1: 50,50 */
+}
+
+/* Emit a semi-transparent flat line: GP0 cmd 0x42 */
+static void emit_semitrans_line(uint32_t color)
+{
+    EMIT_GP0(0x42000000 | (color & 0xFFFFFF));
+    EMIT_GP0(10 | (10 << 16));   /* v0: 10,10 */
+    EMIT_GP0(50 | (50 << 16));   /* v1: 50,50 */
+}
+
 /* ================================================================
  *  S1: TEXFLUSH emitted on first textured draw (cold start)
  * ================================================================ */
@@ -1018,6 +1034,69 @@ static void test_g6b_fillrect_out_clip(void)
 }
 
 /* ================================================================
+ *  G7: Line Lazy State Tracking Tests
+ *
+ *  Lines emit only PRIM + RGBAQ + XYZ2 (and ALPHA_1 if semi-trans).
+ *  They should NOT invalidate gs_state, so the next draw skips
+ *  re-emitting TEX0/DTHE/TEST/CLAMP/TEXCLUT when they haven't changed.
+ *
+ *  G7a: textured_quad → flat_line → same textured_quad
+ *       → DTHE should NOT be re-emitted (0 DTHE in scan)
+ *  G7b: textured_quad → semi-trans_line → same semi-trans textured_quad
+ *       → ALPHA_1 should appear only once (from line), not twice
+ * ================================================================ */
+
+/* G7a: Line doesn't invalidate gs_state → no DTHE re-emission */
+static void test_g7a_line_no_dthe_reemit(void)
+{
+    BEGIN_GPU_TEST("g7a_line_dthe");
+
+    setup_texture_data(2, 0, 0, 480, 0);
+
+    /* Warm gs_state with a textured quad (sets DTHE=0, valid=1) */
+    emit_textured_quad(2, 0, 0, 480);
+
+    /* Draw a flat opaque line (should NOT invalidate gs_state) */
+    /* Then draw the same textured quad again */
+    gp_gif_reset_counter();
+    emit_flat_line(0xFF0000);
+    emit_textured_quad(2, 0, 0, 480);
+    gp_gif_scan();
+
+    /* If line preserved gs_state, DTHE is not re-emitted for the quad */
+    EXPECT_NO_GIF_REG("DTHE", GS_REG_DTHE);
+
+    END_GPU_TEST();
+}
+
+/* G7b: Semi-trans line updates gs_state.alpha → quad doesn't re-emit ALPHA */
+static void test_g7b_semitrans_line_alpha(void)
+{
+    BEGIN_GPU_TEST("g7b_line_alpha");
+
+    setup_texture_data(2, 0, 0, 480, 0);
+
+    /* Set semi_trans_mode = 0 (B-F mode) */
+    EMIT_GP0(0xE1000000 | (2 << 4) | 2); /* E1 with ABR=0, page_tx=2 */
+
+    /* Warm gs_state with a semi-trans textured quad */
+    emit_semitrans_textured_rect(0, 480);
+
+    /* Draw a semi-trans line with same mode → line emits ALPHA_1 */
+    /* Then draw the same semi-trans textured rect */
+    gp_gif_reset_counter();
+    emit_semitrans_line(0xFF0000);
+    emit_semitrans_textured_rect(0, 480);
+    gp_gif_scan();
+
+    /* Line emits 1 ALPHA_1. If gs_state preserved, rect's ALPHA matches → 1 total.
+       If gs_state invalidated, rect re-emits ALPHA → 2 total. */
+    EXPECT_GIF_REG_COUNT("ALPHA_1", GS_REG_ALPHA_1, 1);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_state_tests(void)
@@ -1065,4 +1144,8 @@ void gp_run_state_tests(void)
     printf("\n--- G6: FillRect SCISSOR Skip Tests ---\n");
     test_g6a_fillrect_in_clip();         /* G6a — fill within clip, no SCISSOR */
     test_g6b_fillrect_out_clip();        /* G6b — fill outside clip, SCISSOR emitted */
+
+    printf("\n--- G7: Line Lazy State Tracking Tests ---\n");
+    test_g7a_line_no_dthe_reemit();      /* G7a — line doesn't invalidate gs_state */
+    test_g7b_semitrans_line_alpha();     /* G7b — semi-trans line updates alpha */
 }

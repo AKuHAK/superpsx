@@ -40,15 +40,15 @@ static struct
     int clut_y;
     uint32_t vram_gen;
     int result; /* 0=not cached (15BPP), 2=HW CLUT (CSM1), 3=HW CLUT (CSM2) */
-    
+
     int hw_clut;
-    int csm;    /* 0=CSM1, 1=CSM2 (matches GS TEX0.CSM bit directly) */
+    int csm; /* 0=CSM1, 1=CSM2 (matches GS TEX0.CSM bit directly) */
     int hw_tbp0;
     int hw_cbp;
 } prim_tex_cache[PRIM_TEX_CACHE_SIZE] = {{0}};
-static int prim_tex_cache_next = 0;  /* FIFO write index */
-static int prim_tex_cache_last = -1; /* last-hit index for fast repeated access */
-#define PTCACHE prim_tex_cache[prim_tex_cache_last]  /* shorthand for current entry */
+static int prim_tex_cache_next = 0;                 /* FIFO write index */
+static int prim_tex_cache_last = -1;                /* last-hit index for fast repeated access */
+#define PTCACHE prim_tex_cache[prim_tex_cache_last] /* shorthand for current entry */
 
 /* Invalidate GS state tracking (called on E1, E6, GPU reset, etc.) */
 void Prim_InvalidateGSState(void)
@@ -113,7 +113,8 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
                                         int clut_x, int clut_y)
 {
     /* Fast path: check last-hit entry first */
-    if (prim_tex_cache_last >= 0) {
+    if (prim_tex_cache_last >= 0)
+    {
         typeof(prim_tex_cache[0]) *e = &prim_tex_cache[prim_tex_cache_last];
         if (e->valid &&
             e->tex_format == tex_format &&
@@ -122,12 +123,13 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
             e->clut_x == clut_x &&
             e->clut_y == clut_y &&
             e->vram_gen == Tex_Cache_GetCombinedGen(
-                tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
+                               tex_format, tex_page_x, tex_page_y, clut_x, clut_y))
             return 1;
     }
     /* Search all entries */
     uint32_t gen = Tex_Cache_GetCombinedGen(tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
-    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++) {
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
+    {
         typeof(prim_tex_cache[0]) *e = &prim_tex_cache[i];
         if (e->valid &&
             e->tex_format == tex_format &&
@@ -135,7 +137,8 @@ static inline int prim_tex_cache_lookup(int tex_format, int tex_page_x, int tex_
             e->tex_page_y == tex_page_y &&
             e->clut_x == clut_x &&
             e->clut_y == clut_y &&
-            e->vram_gen == gen) {
+            e->vram_gen == gen)
+        {
             prim_tex_cache_last = i;
             return 1;
         }
@@ -167,7 +170,7 @@ static inline int prim_tex_decode(int tex_format, int tex_page_x, int tex_page_y
         tex_format, tex_page_x, tex_page_y, clut_x, clut_y);
     e->hw_clut = (result == 2 || result == 3) ? 1 : 0;
     e->csm = (result == 3) ? 1 : 0; /* 0=CSM1, 1=CSM2 */
-    
+
     if (e->hw_clut)
     {
         e->hw_tbp0 = *out_x;
@@ -320,7 +323,8 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 }
 
 /* ── Shared Vertex struct (used by polygon emitter and translator) ── */
-typedef struct {
+typedef struct
+{
     int16_t x, y;
     uint32_t color;
     uint32_t uv;
@@ -336,22 +340,28 @@ typedef struct {
  * ═══════════════════════════════════════════════════════════════════ */
 static void emit_poly_state_and_verts(
     const PolyVertex *verts,
-    int num_verts,          /* 3 or 4 */
-    int gs_prim_type,       /* 3=TRIANGLE, 4=TRIANGLE_STRIP */
-    uint32_t cmd,           /* full GP0 command byte (top 8 bits of cmd word) */
+    int num_verts,    /* 3 or 4 */
+    int gs_prim_type, /* 3=TRIANGLE, 4=TRIANGLE_STRIP */
+    uint32_t cmd,     /* full GP0 command byte (top 8 bits of cmd word) */
     int poly_tex_page_x,
     int poly_tex_page_y)
 {
-    int is_shaded    = (cmd & 0x10) != 0;
-    int is_textured  = (cmd & 0x04) != 0;
+    int is_shaded = (cmd & 0x10) != 0;
+    int is_textured = (cmd & 0x04) != 0;
     int is_semi_trans = (cmd & 0x02) != 0;
-    int is_raw_tex   = is_textured && (cmd & 0x01);
-    int use_dither   = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
+    int is_raw_tex = is_textured && (cmd & 0x01);
+    int use_dither = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
 
     uint64_t prim_reg = gs_prim_type;
-    if (is_shaded)    prim_reg |= (1 << 3);  /* IIP */
-    if (is_textured) { prim_reg |= (1 << 4); prim_reg |= (1 << 8); } /* TME + FST */
-    if (is_semi_trans) prim_reg |= (1 << 6); /* ABE */
+    if (is_shaded)
+        prim_reg |= (1 << 3); /* IIP */
+    if (is_textured)
+    {
+        prim_reg |= (1 << 4);
+        prim_reg |= (1 << 8);
+    } /* TME + FST */
+    if (is_semi_trans)
+        prim_reg |= (1 << 6); /* ABE */
 
     /* ── CLUT decode for textured polygons ── */
     int clut_decoded = 0, hw_clut = 0;
@@ -401,8 +411,7 @@ static void emit_poly_state_and_verts(
     }
 
     /* ── Deferred State: fast-path when cmd attributes + cache unchanged ── */
-    int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2)
-                | (semi_trans_mode << 3) | (is_textured << 5);
+    int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2) | (semi_trans_mode << 3) | (is_textured << 5);
     int state_fast = 0;
     if (gs_state.valid && cmd_key == gs_state.last_cmd_key)
     {
@@ -423,99 +432,124 @@ static void emit_poly_state_and_verts(
     else
     {
 
-    /* ── Lazy GS state: pre-compute desired register values ── */
-    int want_dthe = use_dither;
-    uint64_t want_alpha = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
-    uint64_t want_test = is_textured
-                             ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
-                             : 0;
-    uint64_t want_tex0 = 0;
-    uint64_t want_clamp = 0;
-    uint64_t want_texclut = 0;
-    int need_texflush = 0;
+        /* ── Lazy GS state: pre-compute desired register values ── */
+        int want_dthe = use_dither;
+        uint64_t want_alpha = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
+        uint64_t want_test = is_textured
+                                 ? ((uint64_t)1 | ((uint64_t)6 << 1) | Get_Base_TEST())
+                                 : 0;
+        uint64_t want_tex0 = 0;
+        uint64_t want_clamp = 0;
+        uint64_t want_texclut = 0;
+        int need_texflush = 0;
 
-    if (is_textured)
-    {
-        if (clut_decoded)
+        if (is_textured)
         {
-            if (hw_clut)
+            if (clut_decoded)
             {
-                int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                if (csm) {
-                    /* CSM2: TCC=1+TEXA for transparency, CLD=2 for TEXCLUT */
-                    want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
-                                             1/*TCC*/, (is_raw_tex ? 1 : 0),
-                                             0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
-                    want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
-                                                   clut_x / 16, clut_y);
-                } else {
-                    /* CSM1: CLD=1 always reload */
-                    want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
-                                             1/*TCC*/, (is_raw_tex ? 1 : 0),
-                                             PTCACHE.hw_cbp, GS_PSM_16,
-                                             0/*CSM1*/, 0, 1/*CLD*/);
+                if (hw_clut)
+                {
+                    int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
+                    if (csm)
+                    {
+                        /* CSM2: TCC=1+TEXA for transparency, CLD=1 unconditional */
+                        want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
+                                                1 /*TCC*/, (is_raw_tex ? 1 : 0),
+                                                0 /*CBA*/, GS_PSM_16S, 1 /*CSM2*/, 0, 1 /*CLD*/);
+                        want_texclut = GS_SET_TEXCLUT(PSX_VRAM_FBW,
+                                                      clut_x / 16, clut_y);
+                    }
+                    else
+                    {
+                        /* CSM1: CLD=1 always reload */
+                        want_tex0 = GS_SET_TEX0(PTCACHE.hw_tbp0, 4, psm, 8, 8,
+                                                1 /*TCC*/, (is_raw_tex ? 1 : 0),
+                                                PTCACHE.hw_cbp, GS_PSM_16,
+                                                0 /*CSM1*/, 0, 1 /*CLD*/);
+                    }
+                    want_clamp = Compute_TexWin_Clamp();
                 }
-                want_clamp = Compute_TexWin_Clamp();
+                else
+                {
+                    want_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
+                                            1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
+                }
+                need_texflush = !cache_hit;
             }
             else
             {
-                want_tex0 = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
-                                         1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
+                /* Non-CLUT 15BPP: default VRAM view */
+                want_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
+                                        1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
             }
-            need_texflush = !cache_hit;
         }
-        else
+
+        /* ── Determine which GS registers actually need updating ── */
+        int emit_dthe = (!gs_state.valid || gs_state.dthe != want_dthe);
+        int emit_alpha = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha));
+        int emit_tex0 = (is_textured && (!gs_state.valid || gs_state.tex0 != want_tex0 || need_texflush));
+        int emit_test = (is_textured && (!gs_state.valid || gs_state.test != want_test));
+        int emit_clamp = (is_textured && hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
+        int emit_texclut = (is_textured && hw_clut && csm &&
+                            (!gs_state.valid || gs_state.texclut != want_texclut));
+
+        /* CSM2: TEXCLUT only matters when CLD fires (i.e. TEX0 is written).
+         * If TEXCLUT changed but TEX0 wouldn't otherwise be emitted, force
+         * TEX0 re-emission so CLD triggers and loads the correct CLUT.
+         * Without this, TEXCLUT ping-pong without CLD can confuse the GS. */
+        if (emit_texclut && !emit_tex0)
+            emit_tex0 = 1;
+
+        state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
+
+        /* ── A+D tag: State + PRIM (EOP=0) ── */
+        Push_GIF_Tag(GIF_TAG_LO(state_qws + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
+
+        if (emit_dthe)
+            Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
+        if (emit_alpha)
+            Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
+        if (emit_clamp)
+            Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
+        if (emit_texclut)
+            Push_GIF_Data(want_texclut, GS_REG_TEXCLUT);
+        if (emit_tex0)
         {
-            /* Non-CLUT 15BPP: default VRAM view */
-            want_tex0 = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
-                                     1, (is_raw_tex ? 1 : 0), 0, 0, 0, 0, 0);
+            Push_GIF_Data(want_tex0, GS_REG_TEX0);
+            if (need_texflush)
+                Push_GIF_Data(0, GS_REG_TEXFLUSH);
         }
-    }
+        if (emit_test)
+            Push_GIF_Data(want_test, GS_REG_TEST_1);
+        Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
 
-    /* ── Determine which GS registers actually need updating ── */
-    int emit_dthe    = (!gs_state.valid || gs_state.dthe != want_dthe);
-    int emit_alpha   = (is_semi_trans && (!gs_state.valid || gs_state.alpha != want_alpha));
-    int emit_tex0    = (is_textured && (!gs_state.valid || gs_state.tex0 != want_tex0 || need_texflush));
-    int emit_test    = (is_textured && (!gs_state.valid || gs_state.test != want_test));
-    int emit_clamp   = (is_textured && hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
-    int emit_texclut = (is_textured && hw_clut && csm &&
-                        (!gs_state.valid || gs_state.texclut != want_texclut));
-    state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
-
-    /* ── A+D tag: State + PRIM (EOP=0) ── */
-    Push_GIF_Tag(GIF_TAG_LO(state_qws + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
-
-    if (emit_dthe)    Push_GIF_Data((uint64_t)want_dthe, GS_REG_DTHE);
-    if (emit_alpha)   Push_GIF_Data(want_alpha, GS_REG_ALPHA_1);
-    if (emit_clamp)   Push_GIF_Data(want_clamp, GS_REG_CLAMP_1);
-    if (emit_texclut) Push_GIF_Data(want_texclut, GS_REG_TEXCLUT);
-    if (emit_tex0)
-    {
-        Push_GIF_Data(want_tex0, GS_REG_TEX0);
-        if (need_texflush)
-            Push_GIF_Data(0, GS_REG_TEXFLUSH);
-    }
-    if (emit_test)    Push_GIF_Data(want_test, GS_REG_TEST_1);
-    Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
-
-    /* ── Update lazy tracking ── */
-    if (!gs_state.valid)
-    {
-        if (!is_textured) { gs_state.tex0 = ~0ULL; gs_state.test = ~0ULL; gs_state.clamp = ~0ULL; }
-        if (!is_semi_trans) gs_state.alpha = ~0ULL;
-    }
-    gs_state.dthe = want_dthe;
-    if (is_semi_trans) gs_state.alpha = want_alpha;
-    if (is_textured)
-    {
-        gs_state.tex0 = want_tex0;
-        gs_state.test = want_test;
-        if (hw_clut) {
-            gs_state.clamp = want_clamp;
-            if (csm) gs_state.texclut = want_texclut;
+        /* ── Update lazy tracking ── */
+        if (!gs_state.valid)
+        {
+            if (!is_textured)
+            {
+                gs_state.tex0 = ~0ULL;
+                gs_state.test = ~0ULL;
+                gs_state.clamp = ~0ULL;
+            }
+            if (!is_semi_trans)
+                gs_state.alpha = ~0ULL;
         }
-    }
-    gs_state.valid = 1;
+        gs_state.dthe = want_dthe;
+        if (is_semi_trans)
+            gs_state.alpha = want_alpha;
+        if (is_textured)
+        {
+            gs_state.tex0 = want_tex0;
+            gs_state.test = want_test;
+            if (hw_clut)
+            {
+                gs_state.clamp = want_clamp;
+                if (csm)
+                    gs_state.texclut = want_texclut;
+            }
+        }
+        gs_state.valid = 1;
 
     } /* end !state_fast */
 
@@ -528,8 +562,8 @@ static void emit_poly_state_and_verts(
     {
         int nreg = is_textured ? 3 : 2;
         uint64_t regs = is_textured
-            ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8))
-            : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
+                            ? ((uint64_t)GIF_REG_UV | ((uint64_t)GIF_REG_RGBAQ << 4) | ((uint64_t)GIF_REG_XYZ2 << 8))
+                            : ((uint64_t)GIF_REG_RGBAQ | ((uint64_t)GIF_REG_XYZ2 << 4));
         Push_GIF_Tag(GIF_TAG_LO(num_verts, 1, 0, 0, 1, nreg), regs);
 
         uint64_t vdata[12]; /* max 4 × 3 */
@@ -586,11 +620,16 @@ static void emit_poly_state_and_verts(
     {
         int bx0 = verts[0].x, by0 = verts[0].y;
         int bx1 = bx0, by1 = by0;
-        for (int vi = 1; vi < num_verts; vi++) {
-            if (verts[vi].x < bx0) bx0 = verts[vi].x;
-            if (verts[vi].y < by0) by0 = verts[vi].y;
-            if (verts[vi].x > bx1) bx1 = verts[vi].x;
-            if (verts[vi].y > by1) by1 = verts[vi].y;
+        for (int vi = 1; vi < num_verts; vi++)
+        {
+            if (verts[vi].x < bx0)
+                bx0 = verts[vi].x;
+            if (verts[vi].y < by0)
+                by0 = verts[vi].y;
+            if (verts[vi].x > bx1)
+                bx1 = verts[vi].x;
+            if (verts[vi].y > by1)
+                by1 = verts[vi].y;
         }
         emit_debug_box(bx0, by0, bx1, by1,
                        tex_page_format,
@@ -672,7 +711,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             gpu_estimated_pixels += area;
         }
 
-
         /* Unified polygon emitter: quad=TRISTRIP(4), tri=TRIANGLE(3) */
         emit_poly_state_and_verts(verts, num_psx_verts,
                                   is_quad ? 4 : 3,
@@ -681,7 +719,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         return idx;
     }
     else if ((cmd & 0xE0) == 0x60)
-    {                       // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
+    { // Rectangle (Sprite) - use GS SPRITE primitive for reliable rendering
         int is_textured = (cmd & 0x04) != 0;
         int is_var_size = (cmd & 0x18) == 0x00;
         int size_mode = (cmd >> 3) & 3;
@@ -999,19 +1037,22 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     if (rect_hw_clut)
                     {
                         int psm = (tex_page_format == 0) ? GS_PSM_4 : GS_PSM_8;
-                        if (rect_csm) {
-                            /* CSM2: TCC=1+TEXA for transparency, CLD=2 for TEXCLUT */
+                        if (rect_csm)
+                        {
+                            /* CSM2: TCC=1+TEXA for transparency, CLD=1 unconditional */
                             want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
-                                                       1/*TCC*/, (is_raw_texture ? 1 : 0),
-                                                       0/*CBA*/, GS_PSM_16S, 1/*CSM2*/, 0, 2/*CLD*/);
+                                                      1 /*TCC*/, (is_raw_texture ? 1 : 0),
+                                                      0 /*CBA*/, GS_PSM_16S, 1 /*CSM2*/, 0, 1 /*CLD*/);
                             want_texclut_r = GS_SET_TEXCLUT(PSX_VRAM_FBW,
-                                                             rect_clut_x / 16, rect_clut_y);
-                        } else {
+                                                            rect_clut_x / 16, rect_clut_y);
+                        }
+                        else
+                        {
                             /* CSM1: CLD=1 always reload */
                             want_tex0_r = GS_SET_TEX0(rect_hw_tbp0, 4, psm, 8, 8,
-                                                       1/*TCC*/, (is_raw_texture ? 1 : 0),
-                                                       rect_hw_cbp, GS_PSM_16,
-                                                       0/*CSM1*/, 0, 1/*CLD*/);
+                                                      1 /*TCC*/, (is_raw_texture ? 1 : 0),
+                                                      rect_hw_cbp, GS_PSM_16,
+                                                      0 /*CSM1*/, 0, 1 /*CLD*/);
                         }
                         /* GS CLAMP_1 handles PSX texture window via REGION_REPEAT */
                         want_clamp_r = Compute_TexWin_Clamp();
@@ -1019,12 +1060,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                     else if (clut_decoded)
                     {
                         want_tex0_r = GS_SET_TEX0(4096, PSX_VRAM_FBW, GS_PSM_16S, 10, 10,
-                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
+                                                  1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     else
                     {
                         want_tex0_r = GS_SET_TEX0(0, PSX_VRAM_FBW, GS_PSM_16S, 10, 9,
-                                                   1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
+                                                  1, (is_raw_texture ? 1 : 0), 0, 0, 0, 0, 0);
                     }
                     need_texflush_r = !rect_tex_cache_hit;
                 }
@@ -1037,6 +1078,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 int emit_clamp_r = (rect_hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp_r));
                 int emit_texclut_r = (rect_hw_clut && rect_csm &&
                                       (!gs_state.valid || gs_state.texclut != want_texclut_r));
+
+                /* CSM2: force TEX0 re-emission when TEXCLUT changes (see POLY path comment) */
+                if (emit_texclut_r && !emit_tex0_r)
+                    emit_tex0_r = 1;
+
                 int state_qws_r = emit_dthe_r + emit_alpha_r + emit_tex0_r + (emit_tex0_r && need_texflush_r) + emit_test_r + emit_clamp_r + emit_texclut_r;
 
                 /* G4: State+PRIM in A+D, vertices in REGLIST */
@@ -1192,14 +1238,17 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int clip_ok = (x >= draw_clip_x1) && ((x + w) <= draw_clip_x2) &&
                       (y >= draw_clip_y1) && ((y + h) <= draw_clip_y2);
 
-        if (clip_ok) {
+        if (clip_ok)
+        {
             /* Fill fits within current SCISSOR — 4 QW packet */
             Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
             Push_GIF_Data(GS_PACK_PRIM_FROM_INT(6), GS_REG_PRIM);
             Push_GIF_Data(GS_SET_RGBAQ(r, g, b, 0x80, 0x3F800000), GS_REG_RGBAQ);
             Push_GIF_Data(GS_SET_XYZ(x1, y1, 0), GS_REG_XYZ2);
             Push_GIF_Data(GS_SET_XYZ(x2, y2, 0), GS_REG_XYZ2);
-        } else {
+        }
+        else
+        {
             /* Fill outside draw_clip — expand SCISSOR to full VRAM, then restore */
             Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
             Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);
@@ -1243,7 +1292,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         return 3;
     }
     else if ((cmd & 0xE0) == 0x40)
-    {                       // Line
+    { // Line
         /* G7: Lines only emit ALPHA_1 (semi-trans) + PRIM + vertices.
          * They don't touch TEX0/TEST/DTHE/CLAMP/TEXCLUT, so keep
          * gs_state valid and just update alpha when semi-trans. */

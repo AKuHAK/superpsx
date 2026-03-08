@@ -3,9 +3,9 @@
  *
  * Two rendering paths for indexed (4BPP/8BPP) textures:
  *
- * 1. HW CLUT (primary): Upload raw PSMT8/4 indices + CT16 CLUT palette.
- *    GS hardware performs per-pixel CLUT lookup — zero CPU decode.
- *    Requires CSM1 entry shuffle for 8BPP (256-entry) CLUTs.
+ * 1. HW CLUT CSM2 (primary): Upload raw PSMT8/4 indices to GS.
+ *    GS reads CLUT directly from PSX VRAM mirror (CT16S at FBP=0)
+ *    via TEXCLUT register — zero CLUT upload, zero CPU swizzle.
  *    Texture windows are handled by GS CLAMP_1 REGION_REPEAT mode.
  *
  * 2. SW decode (fallback): Full 256×256 CPU decode to CT16S.
@@ -307,12 +307,9 @@ static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
 }
 
 /* Upload CLUT palette to GS VRAM (CSM1, PSMCT16).
- * Pre-processes PSX palette: set STP bit (bit 15) for non-zero entries.
- * Applies CSM1 entry shuffle (swap entries where (i & 0x18) == 8 with i+8).
- * For 8BPP: 256 entries uploaded as 16×16 rectangle.
- * For 4BPP: 16 entries uploaded as 16×1 rectangle.
- *
- * Single-pass: read in CSM1 order, apply STP, pack directly into QWs. */
+ * DEAD CODE — retained for reference / CSM1 fallback if needed.
+ * CSM2 reads CLUT directly from PSX VRAM mirror, no upload needed. */
+#if 0  /* CSM1 — replaced by CSM2 */
 
 /* CSM1 reorder table for 256-entry CLUT: for each group of 32,
  * [0-7, 8-15, 16-23, 24-31] → [0-7, 16-23, 8-15, 24-31].
@@ -642,6 +639,7 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
         }
     }
 }
+#endif /* CSM1 — replaced by CSM2 */
 
 /* ── Texture window coordinate transform ─────────────────────────── */
 
@@ -656,8 +654,8 @@ static void Upload_CLUT_CSM1(int cbp, int clut_x, int clut_y, int tex_format)
  *
  *  Returns:
  *    0 = 15BPP — caller should use direct PSX VRAM (CT16S).
- *    2 = HW CLUT (PSMT8/4).  out_slot_x = TBP0, out_slot_y = CBP.
- *        Caller must set TEX0 for indexed texture mode.
+ *    3 = HW CLUT CSM2 (PSMT8/4).  out_slot_x = TBP0, out_slot_y = 0.
+ *        GS reads CLUT directly from PSX VRAM mirror via TEXCLUT.
  * ═══════════════════════════════════════════════════════════════════ */
 
 int Decode_TexPage_Cached(int tex_format,
@@ -710,55 +708,30 @@ int Decode_TexPage_Cached(int tex_format,
         tex_stats.pixels_saved += 256 * 256;
     }
 
-    /* ── CLUT: content-cached upload via CSM1 (G1) ─────────────────── */
-    /* Check if the CLUT region has been dirtied since last upload.
-     * If unchanged, reuse the same CBP (no GIF upload needed).       */
-    int clut_entries = (tex_format == 0) ? 16 : 256;
-    uint32_t current_clut_gen = get_region_gen(clut_x, clut_y, clut_entries, 1);
-
-    int ci = clut_cache_index(clut_x, clut_y, tex_format);
-    int cbp;
-
-#if ENABLE_CLUT_CONTENT_CACHE
-    if (clut_content_cache[ci].valid &&
-        clut_content_cache[ci].clut_x  == clut_x &&
-        clut_content_cache[ci].clut_y  == clut_y &&
-        clut_content_cache[ci].format  == tex_format &&
-        clut_content_cache[ci].gen     == current_clut_gen)
-    {
-        /* CLUT cache hit — reuse CBP, skip upload */
-        cbp = clut_content_cache[ci].cbp;
-        tex_stats.clut_cache_hits++;
-    }
-    else
-#endif
-    {
-        /* CLUT cache miss — allocate new CBP and upload */
-        cbp = alloc_clut_cbp();
-        Upload_CLUT_CSM1(cbp, clut_x, clut_y, tex_format);
-        tex_stats.clut_uploads++;
-
-#if ENABLE_CLUT_CONTENT_CACHE
-        clut_content_cache[ci].clut_x = clut_x;
-        clut_content_cache[ci].clut_y = clut_y;
-        clut_content_cache[ci].format = tex_format;
-        clut_content_cache[ci].gen    = current_clut_gen;
-        clut_content_cache[ci].cbp    = cbp;
-        clut_content_cache[ci].valid  = 1;
-#endif
-    }
+    /* ── CSM2: CLUT read directly from PSX VRAM mirror ────────────── */
+    /* No CLUT upload needed.  The GS reads the CLUT directly from the
+     * PSX VRAM mirror (CT16S at FBP=0) via the TEXCLUT register.
+     * The mirror is already up-to-date — all VRAM writes go through
+     * Upload_Shadow_VRAM_Region / GS_UploadRegionFast which apply STP
+     * fixup and upload to GS VRAM block 0 as CT16S.
+     *
+     * Savings vs CSM1:
+     *   - Eliminates 256-entry swizzle table lookup (csm1_order_256)
+     *   - Eliminates CLUT GIF upload (37 QW for 8BPP, 7 QW for 4BPP)
+     *   - Eliminates CLUT content cache + round-robin CBP allocator
+     */
 
 #ifdef TEX_DEBUG_OVERLAY
-    printf("[DECODE] #%lu fmt=%d pg=%d(%d,%d) clut=(%d,%d) tbp=%d cbp=%d %s\n",
+    printf("[DECODE] #%lu fmt=%d pg=%d(%d,%d) clut=(%d,%d) tbp=%d CSM2 %s\n",
            (unsigned long)tex_stats.total_requests,
            tex_format, page_id, tex_page_x, tex_page_y,
-           clut_x, clut_y, tbp0, cbp,
+           clut_x, clut_y, tbp0,
            page_dirty ? "UPLOAD" : "HIT");
 #endif
 
     *out_slot_x = tbp0;
-    *out_slot_y = cbp;
-    return 2;
+    *out_slot_y = 0; /* unused for CSM2; TEX0.CBA=0 */
+    return 3;
 }
 
 /* ── Statistics dump (called on triangle button press) ────────────── */

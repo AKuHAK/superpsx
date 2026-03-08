@@ -308,7 +308,7 @@ void GPU_WriteGP0(uint32_t data)
 
                     int w_aligned = (vram_read_w + 7) & ~7; /* 8-pixel alignment for GS transfer */
                     int total_pixels = w_aligned * vram_read_h;
-                    int buf_bytes = total_pixels * 2;       /* 16bpp */
+                    int buf_bytes = total_pixels * 2; /* 16bpp */
                     int buf_qwc = (buf_bytes + 15) / 16;
                     void *rb_buf = memalign(64, buf_qwc * 16);
                     if (rb_buf)
@@ -327,11 +327,13 @@ void GPU_WriteGP0(uint32_t data)
                             for (int row = 0; row < vram_read_h; row++)
                             {
                                 int dy = vram_read_y + row;
-                                if (dy >= 512) dy -= 512;
+                                if (dy >= 512)
+                                    dy -= 512;
                                 for (int col = 0; col < vram_read_w; col++)
                                 {
                                     int dx = vram_read_x + col;
-                                    if (dx >= 1024) dx -= 1024;
+                                    if (dx >= 1024)
+                                        dx -= 1024;
                                     uint16_t px = pixels[row * w_aligned + col] & 0x7FFF;
                                     psx_vram_shadow[dy * 1024 + dx] = px;
                                 }
@@ -458,8 +460,8 @@ void GPU_WriteGP0(uint32_t data)
 
                     for (int v = 0; v < num_verts; v++)
                     {
-                        int16_t px = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] & 0xFFFF) << 21) >> 21);
-                        int16_t py = (int16_t)((int32_t)((gpu_cmd_buffer[v+1] >> 16) << 21) >> 21);
+                        int16_t px = (int16_t)((int32_t)((gpu_cmd_buffer[v + 1] & 0xFFFF) << 21) >> 21);
+                        int16_t py = (int16_t)((int32_t)((gpu_cmd_buffer[v + 1] >> 16) << 21) >> 21);
                         Push_GIF_Data(rgbaq, GS_SET_XYZ(((int32_t)px + draw_offset_x + 2048) << 4, ((int32_t)py + draw_offset_y + 2048) << 4, 0));
                     }
 
@@ -471,7 +473,8 @@ void GPU_WriteGP0(uint32_t data)
                     int16_t x2 = (int16_t)((int32_t)((gpu_cmd_buffer[3] & 0xFFFF) << 21) >> 21);
                     int16_t y2 = (int16_t)((int32_t)((gpu_cmd_buffer[3] >> 16) << 21) >> 21);
                     int32_t a = (int32_t)x0 * ((int32_t)y1 - y2) + (int32_t)x1 * ((int32_t)y2 - y0) + (int32_t)x2 * ((int32_t)y0 - y1);
-                    if (a < 0) a = -a;
+                    if (a < 0)
+                        a = -a;
                     uint32_t area = (uint32_t)(a >> 1);
 
                     if (is_quad)
@@ -479,7 +482,8 @@ void GPU_WriteGP0(uint32_t data)
                         int16_t x3 = (int16_t)((int32_t)((gpu_cmd_buffer[4] & 0xFFFF) << 21) >> 21);
                         int16_t y3 = (int16_t)((int32_t)((gpu_cmd_buffer[4] >> 16) << 21) >> 21);
                         int32_t a2 = (int32_t)x1 * ((int32_t)y3 - y2) + (int32_t)x3 * ((int32_t)y2 - y1) + (int32_t)x2 * ((int32_t)y1 - y3);
-                        if (a2 < 0) a2 = -a2;
+                        if (a2 < 0)
+                            a2 = -a2;
                         area += (uint32_t)(a2 >> 1);
                     }
                     gpu_estimated_pixels += area;
@@ -1029,7 +1033,11 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
             }
             else
             {
-                while (i < word_count) { GPU_WriteGP0(data_ptr[i]); i++; }
+                while (i < word_count)
+                {
+                    GPU_WriteGP0(data_ptr[i]);
+                    i++;
+                }
             }
             continue;
         }
@@ -1042,8 +1050,10 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
                 uint32_t dims = cmd_ptr[2];
                 uint32_t w = dims & 0xFFFF;
                 uint32_t h = dims >> 16;
-                if (w == 0) w = 1024;
-                if (h == 0) h = 512;
+                if (w == 0)
+                    w = 1024;
+                if (h == 0)
+                    h = 512;
                 uint32_t image_words = (w * h + 1) / 2;
                 if (i + 3 + image_words <= word_count)
                 {
@@ -1063,7 +1073,11 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
         {
             /* Feed all 3 words so GPU_WriteGP0 sets up the read state */
             int end = (i + 3 <= word_count) ? i + 3 : word_count;
-            while (i < end) { GPU_WriteGP0(data_ptr[i]); i++; }
+            while (i < end)
+            {
+                GPU_WriteGP0(data_ptr[i]);
+                i++;
+            }
             continue;
         }
 
@@ -1080,7 +1094,11 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
             }
             else
             {
-                while (i < word_count) { GPU_WriteGP0(data_ptr[i]); i++; }
+                while (i < word_count)
+                {
+                    GPU_WriteGP0(data_ptr[i]);
+                    i++;
+                }
             }
             continue;
         }

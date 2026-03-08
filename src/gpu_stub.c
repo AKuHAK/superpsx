@@ -257,6 +257,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd) {
 }
 void Prim_InvalidateGSState(void) {}
 void Prim_InvalidateTexCache(void) {}
+void Prim_InvalidateTexCache_CBP(int cbp) { (void)cbp; }
+void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y) { (void)tex_page_x; (void)tex_page_y; }
 
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,

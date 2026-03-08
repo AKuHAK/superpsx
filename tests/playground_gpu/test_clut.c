@@ -447,6 +447,72 @@ static void test_clut_robin_overwrite(void)
 }
 
 /* ================================================================
+ *  Test C9: Format change (4bpp→8bpp→4bpp) invalidates prim_tex_cache
+ *
+ *  Regression test for G3 bug: when a texture page changes format
+ *  (e.g. 4bpp → 8bpp), the page is re-uploaded to GS VRAM but PSX
+ *  VRAM is unchanged, so vram_gen stays the same.  Old prim_tex_cache
+ *  entries for the previous format must be invalidated, otherwise a
+ *  subsequent draw in the old format gets a false HIT with the wrong
+ *  GS texture data → garbled textures.
+ * ================================================================ */
+static void test_prim_cache_format_change(void)
+{
+    BEGIN_GPU_TEST("fmt_change");
+
+    SETUP_GP1(0x00000000);
+    Tex_Cache_Init();
+
+    /* Write tex page data + 4bpp CLUT + 8bpp CLUT */
+    write_texpage_data(0, 0);
+    write_clut_4bpp(0, 240, 0x1000);   /* 4bpp CLUT at (0,240) */
+    write_clut_8bpp(256, 240, 0x2000); /* 8bpp CLUT at (256,240) */
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 128, 256);
+    Tex_Cache_DirtyRegion(0, 240, 16, 1);
+    Tex_Cache_DirtyRegion(256, 240, 256, 1);
+
+    /* Draw 1: 4bpp on page (0,0) — cache MISS, uploads page + CLUT */
+    emit_textured_quad_4bpp(0, 0, 0, 240);
+    Flush_GIF();
+    uint32_t qw_draw1 = gp_ctx.qwords_generated;
+
+    /* Draw 2: 8bpp on SAME page (0,0) — format change triggers re-upload.
+     * This MUST invalidate any existing 4bpp entry for this page. */
+    gp_ctx.qwords_generated = 0;
+    mock_gif_qwords_written = 0;
+    fast_gif_ptr = MOCK_GIF_BUFFER_START;
+    emit_textured_quad_8bpp(0, 0, 256, 240);
+    Flush_GIF();
+    uint32_t qw_draw2 = gp_ctx.qwords_generated;
+
+    /* Draw 3: 4bpp again on SAME page (0,0).
+     * The old 4bpp entry must NOT falsely HIT — the GS page now has
+     * 8bpp-decoded data, so a 4bpp draw must re-upload.
+     * Without the fix: false HIT → qw_draw3 is tiny (just prim data).
+     * With the fix: MISS → re-uploads page (~2048+ QWs). */
+    gp_ctx.qwords_generated = 0;
+    mock_gif_qwords_written = 0;
+    fast_gif_ptr = MOCK_GIF_BUFFER_START;
+    emit_textured_quad_4bpp(0, 0, 0, 240);
+    Flush_GIF();
+    uint32_t qw_draw3 = gp_ctx.qwords_generated;
+
+    /* Draw 1 and Draw 3 should both produce significant GIF output
+     * (page upload).  Draw 3 MUST re-upload, not get a stale HIT. */
+    if (qw_draw3 > qw_draw1 / 2) {
+        printf("    %-16s: d1=%u d2=%u d3=%u QWs (re-upload on fmt change) OK\n",
+               gp_ctx.name, (unsigned)qw_draw1, (unsigned)qw_draw2, (unsigned)qw_draw3);
+    } else {
+        printf("  [FAIL] %-16s: d1=%u d2=%u d3=%u QWs (d3 too small — stale cache hit!)\n",
+               gp_ctx.name, (unsigned)qw_draw1, (unsigned)qw_draw2, (unsigned)qw_draw3);
+        gp_ctx.fail_count++;
+    }
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
  *  Runner
  * ================================================================ */
 void gp_run_clut_tests(void)
@@ -460,5 +526,6 @@ void gp_run_clut_tests(void)
     test_clut_round_robin();
     test_alternating_textures();
     test_clut_robin_overwrite();
+    test_prim_cache_format_change();
     printf("\n");
 }

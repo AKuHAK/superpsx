@@ -698,8 +698,11 @@ int Decode_TexPage_Cached(int tex_format,
         page_gen[page_id] = current_page_gen;
         page_format[page_id] = tex_format;
         tex_stats.page_uploads++;
-        /* No prim_tex_cache invalidation needed: the per-region gen check
-         * (G2) ensures any entry referencing a dirty page will MISS. */
+        /* Invalidate prim_tex_cache entries referencing this page.
+         * The gen check alone is NOT sufficient: format changes (4bpp↔8bpp)
+         * cause a GS re-upload without dirtying PSX VRAM, so stale entries
+         * with the old format would falsely HIT on matching gen. */
+        Prim_InvalidateTexCache_Page(tex_page_x, tex_page_y);
     }
     else
     {

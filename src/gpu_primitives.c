@@ -93,6 +93,17 @@ void Prim_InvalidateTexCache_CBP(int cbp)
             prim_tex_cache[i].valid = 0;
 }
 
+/* Targeted invalidation: entries referencing a specific texture page.
+ * Called when a page is re-uploaded (format change or VRAM dirty). */
+void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y)
+{
+    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
+        if (prim_tex_cache[i].valid &&
+            prim_tex_cache[i].tex_page_x == tex_page_x &&
+            prim_tex_cache[i].tex_page_y == tex_page_y)
+            prim_tex_cache[i].valid = 0;
+}
+
 /* Try to reuse cached Decode_TexPage_Cached result.
  * Returns 1 if hit (result stored in prim_tex_cache[prim_tex_cache_last]),
  * 0 if miss. */

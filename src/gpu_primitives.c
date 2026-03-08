@@ -534,6 +534,19 @@ static void emit_poly_state_and_verts(
 
         uint64_t vdata[12]; /* max 4 × 3 */
         int vc = 0;
+
+        /* D) Hoist flat color: precompute RGBAQ once for flat-shaded */
+        uint64_t flat_rgbaq = 0;
+        if (!is_shaded)
+        {
+            uint32_t c = verts[0].color;
+            flat_rgbaq = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+        }
+
+        /* F) Precompute draw offset + GS origin bias */
+        int32_t ox = draw_offset_x + 2048;
+        int32_t oy = draw_offset_y + 2048;
+
         for (int i = 0; i < num_verts; i++)
         {
             if (is_textured)
@@ -551,10 +564,17 @@ static void emit_poly_state_and_verts(
                 }
                 vdata[vc++] = GS_SET_XYZ(u << 4, v_coord << 4, 0);
             }
-            uint32_t c = verts[i].color;
-            vdata[vc++] = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
-            int32_t gx = ((int32_t)verts[i].x + draw_offset_x + 2048) << 4;
-            int32_t gy = ((int32_t)verts[i].y + draw_offset_y + 2048) << 4;
+            if (is_shaded)
+            {
+                uint32_t c = verts[i].color;
+                vdata[vc++] = GS_SET_RGBAQ(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, 0x80, 0x3F800000);
+            }
+            else
+            {
+                vdata[vc++] = flat_rgbaq;
+            }
+            int32_t gx = ((int32_t)verts[i].x + ox) << 4;
+            int32_t gy = ((int32_t)verts[i].y + oy) << 4;
             vdata[vc++] = GS_SET_XYZ(gx, gy, 0);
         }
         for (int i = 0; i < vc; i += 2)

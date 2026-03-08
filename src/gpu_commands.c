@@ -322,16 +322,19 @@ void GPU_WriteGP0(uint32_t data)
                          * for black pixels, but on PSX, FillRect(000000) produces
                          * raw 0x0000.  Strip bit 15 so the shadow matches PSX
                          * behaviour: 0x0000 = transparent, non-zero = visible. */
-                        for (int row = 0; row < vram_read_h; row++)
+                        if (pixels)
                         {
-                            int dy = vram_read_y + row;
-                            if (dy >= 512) dy -= 512;
-                            for (int col = 0; col < vram_read_w; col++)
+                            for (int row = 0; row < vram_read_h; row++)
                             {
-                                int dx = vram_read_x + col;
-                                if (dx >= 1024) dx -= 1024;
-                                uint16_t px = pixels[row * w_aligned + col] & 0x7FFF;
-                                psx_vram_shadow[dy * 1024 + dx] = px;
+                                int dy = vram_read_y + row;
+                                if (dy >= 512) dy -= 512;
+                                for (int col = 0; col < vram_read_w; col++)
+                                {
+                                    int dx = vram_read_x + col;
+                                    if (dx >= 1024) dx -= 1024;
+                                    uint16_t px = pixels[row * w_aligned + col] & 0x7FFF;
+                                    psx_vram_shadow[dy * 1024 + dx] = px;
+                                }
                             }
                         }
                         free(rb_buf);

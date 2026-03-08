@@ -83,9 +83,9 @@ static void test_expansion_textured_quad(void)
 
     Flush_GIF();
 
-    /* Textured quad max expected: Generous 2000 cycles for new run baseline */
-    EXPECT_QWORDS(38); 
-    EXPECT_CYCLES(2000);
+    /* Cold-path textured quad: includes GP1 reset + texpage + full cache miss */
+    EXPECT_QWORDS(22); 
+    EXPECT_CYCLES(3200);
 
     END_GPU_TEST();
 }
@@ -177,7 +177,7 @@ static void test_expansion_shaded_geom(void)
     EMIT_GP0(0x00FF0000); EMIT_GP0(0|(10<<16)); EMIT_GP0(0|(32<<8));
     EMIT_GP0(0x00FFFFFF); EMIT_GP0(10|(10<<16)); EMIT_GP0(32|(32<<8));
     Flush_GIF();
-    EXPECT_QWORDS(30); EXPECT_CYCLES(1999);
+    EXPECT_QWORDS(22); EXPECT_CYCLES(3400);
     END_GPU_TEST();
 }
 

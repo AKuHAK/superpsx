@@ -292,6 +292,22 @@ static inline uint32_t Apply_Tex_Window_V(uint32_t v)
     return (v & ~mask) | off;
 }
 extern uint32_t vram_gen_counter;
+
+/* ── Per-frame GPU command counters (profiler visibility) ──────── */
+typedef struct {
+    uint32_t poly_tex;      /* textured polygon (0x24-0x2F, 0x34-0x3F) */
+    uint32_t poly_flat;     /* non-textured polygon */
+    uint32_t rect_tex;      /* textured rectangle/sprite */
+    uint32_t rect_flat;     /* non-textured rectangle */
+    uint32_t line;          /* line/polyline */
+    uint32_t fill;          /* FillRect (GP0.02) */
+    uint32_t vram_load;     /* CPU→VRAM transfer (GP0.A0) */
+    uint32_t vram_store;    /* VRAM→CPU transfer (GP0.C0) */
+    uint32_t vram_copy;     /* VRAM→VRAM copy (GP0.80) */
+    uint32_t texcache_hit;  /* prim_tex_cache hits */
+    uint32_t texcache_miss; /* prim_tex_cache misses → Decode_TexPage_Cached */
+} gpu_frame_stats_t;
+extern gpu_frame_stats_t gpu_frame_stats;
 int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
                          int u0, int v0, int tw, int th);
 int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,

@@ -6,6 +6,7 @@
  * Also prints a brief summary to stdout for each report.
  */
 #include "profiler.h"
+#include "gpu_state.h"
 #include <stdio.h>
 
 /* From dynarec_run.c — hotspot tracker */
@@ -246,6 +247,35 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
                          prof.ticks, prof.calls,
                          prof.psx_cycles, prof.jit_blocks,
                          prof.jit_compiles, prof.gpu_pixels);
+
+            /* ── Per-frame GPU command breakdown ── */
+            {
+                double nf = (double)prof.frames;
+                fprintf(prof_log_file,
+                        "GPU Commands (per frame avg over %lu frames):\n"
+                        "  Poly tex=%.1f flat=%.1f | Rect tex=%.1f flat=%.1f\n"
+                        "  Line=%.1f Fill=%.1f\n"
+                        "  VRAM: load=%.1f store=%.1f copy=%.1f\n"
+                        "  TexCache: hit=%.1f miss=%.1f (%.1f%% hit rate)\n",
+                        (unsigned long)prof.frames,
+                        gpu_frame_stats.poly_tex / nf,
+                        gpu_frame_stats.poly_flat / nf,
+                        gpu_frame_stats.rect_tex / nf,
+                        gpu_frame_stats.rect_flat / nf,
+                        gpu_frame_stats.line / nf,
+                        gpu_frame_stats.fill / nf,
+                        gpu_frame_stats.vram_load / nf,
+                        gpu_frame_stats.vram_store / nf,
+                        gpu_frame_stats.vram_copy / nf,
+                        gpu_frame_stats.texcache_hit / nf,
+                        gpu_frame_stats.texcache_miss / nf,
+                        (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss > 0)
+                            ? (100.0 * gpu_frame_stats.texcache_hit /
+                               (gpu_frame_stats.texcache_hit + gpu_frame_stats.texcache_miss))
+                            : 0.0);
+                /* Reset for next report interval */
+                memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
+            }
             fprintf(prof_log_file, "\n");
 
             /* Grand totals every 5 reports */

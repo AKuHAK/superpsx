@@ -229,6 +229,10 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
     if (w <= 0 || h <= 0)
         return;
 
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+    gpu_frame_stats.vram_load++;
+#endif
+
     /* Track dirty region for texture cache invalidation */
     vram_gen_counter++;
     Tex_Cache_DirtyRegion(x, y, w, h);

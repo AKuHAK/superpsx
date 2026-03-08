@@ -12,6 +12,9 @@
 /* ── GPU pixel cost accumulator for cycle-accurate rendering delay ── */
 uint64_t gpu_estimated_pixels = 0;
 
+/* ── Per-frame GPU command counters ── */
+gpu_frame_stats_t gpu_frame_stats = {0};
+
 /* ═══════════════════════════════════════════════════════════════════
  *  Lazy GS State Tracking
  *
@@ -407,6 +410,7 @@ static void emit_poly_state_and_verts(
                                           clut_x, clut_y);
         if (cache_hit)
         {
+            gpu_frame_stats.texcache_hit++;
             result = PTCACHE.result;
             uv_off_u = PTCACHE.hw_tbp0;
             uv_off_v = PTCACHE.hw_cbp;
@@ -414,6 +418,7 @@ static void emit_poly_state_and_verts(
         }
         else
         {
+            gpu_frame_stats.texcache_miss++;
             int out_x, out_y;
             result = prim_tex_decode(tex_page_format,
                                      poly_tex_page_x, poly_tex_page_y,
@@ -692,6 +697,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_quad = (cmd & 0x08) != 0;
         int is_shaded = (cmd & 0x10) != 0;
         int is_textured = (cmd & 0x04) != 0;
+        if (is_textured)
+            gpu_frame_stats.poly_tex++;
+        else
+            gpu_frame_stats.poly_flat++;
 
         int num_psx_verts = is_quad ? 4 : 3;
         uint32_t color = cmd_word & 0xFFFFFF;
@@ -762,6 +771,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_textured = (cmd & 0x04) != 0;
         int is_var_size = (cmd & 0x18) == 0x00;
         int size_mode = (cmd >> 3) & 3;
+        if (is_textured)
+            gpu_frame_stats.rect_tex++;
+        else
+            gpu_frame_stats.rect_flat++;
 
         uint32_t color = cmd_word & 0xFFFFFF;
         int idx = 1;
@@ -850,6 +863,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                                           tex_page_x, tex_page_y,
                                           clut_x, clut_y))
                 {
+                    gpu_frame_stats.texcache_hit++;
                     result = PTCACHE.result;
                     cache_slot_x = PTCACHE.hw_tbp0;
                     cache_slot_y = PTCACHE.hw_cbp;
@@ -858,6 +872,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
                 else
                 {
+                    gpu_frame_stats.texcache_miss++;
                     result = prim_tex_decode(tex_page_format,
                                              tex_page_x, tex_page_y,
                                              clut_x, clut_y,
@@ -1249,6 +1264,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     }
     else if (cmd == 0x02)
     { // FillRect
+        gpu_frame_stats.fill++;
         uint32_t color = cmd_word & 0xFFFFFF;
         uint32_t xy = psx_cmd[1];
         uint32_t wh = psx_cmd[2];
@@ -1340,6 +1356,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     }
     else if ((cmd & 0xE0) == 0x40)
     { // Line
+        gpu_frame_stats.line++;
         /* G7: Lines only emit ALPHA_1 (semi-trans) + PRIM + vertices.
          * They don't touch TEX0/TEST/DTHE/CLAMP/TEXCLUT, so keep
          * gs_state valid and just update alpha when semi-trans. */

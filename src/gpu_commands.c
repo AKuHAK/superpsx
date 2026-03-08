@@ -271,6 +271,7 @@ void GPU_WriteGP0(uint32_t data)
 
                 vram_gen_counter++;
                 Tex_Cache_DirtyRegion(vram_tx_x, vram_tx_y, w, h);
+                gpu_frame_stats.vram_load++;
                 Start_VRAM_Transfer(vram_tx_x, vram_tx_y, w, h);
 #ifdef TEX_DEBUG_OVERLAY
                 if (w * h > 200)
@@ -279,6 +280,7 @@ void GPU_WriteGP0(uint32_t data)
             }
             else if (cmd == 0xC0)
             {
+                gpu_frame_stats.vram_store++;
                 uint32_t xy = gpu_cmd_buffer[1];
                 uint32_t wh = gpu_cmd_buffer[2];
                 vram_read_x = xy & 0xFFFF;
@@ -371,6 +373,7 @@ void GPU_WriteGP0(uint32_t data)
                 {
                     vram_gen_counter++;
                     Tex_Cache_DirtyRegion(dx, dy, w, h);
+                    gpu_frame_stats.vram_copy++;
 
                     /* Copy in shadow VRAM (handles all overlap cases
                      * correctly with PSX pixel-by-pixel semantics).

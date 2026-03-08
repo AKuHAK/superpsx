@@ -259,6 +259,8 @@ typedef struct
     uint64_t texclut;  /* Last TEXCLUT written (for CSM2) */
     int dthe;          /* Last DTHE written (0 or 1) */
     int valid;         /* 0 = unknown, 1 = tracked values are current */
+    int last_cmd_key;  /* Encoded cmd attributes for deferred state fast path */
+    int last_cache_slot; /* prim_tex_cache slot index used by last textured prim */
 } gs_state_t;
 
 extern gs_state_t gs_state;

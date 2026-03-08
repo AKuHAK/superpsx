@@ -23,7 +23,7 @@ uint64_t gpu_estimated_pixels = 0;
  *  Invalidation: gs_state_dirty = 1 on any external state change
  *  (E1/E6 handlers, GPU reset, VRAM upload).
  * ═══════════════════════════════════════════════════════════════════ */
-gs_state_t gs_state = {0, 0, 0, 0, -1, 0};
+gs_state_t gs_state = {0, 0, 0, 0, -1, 0, 0, -1, -1};
 
 /* Primitive-level Decode_TexPage_Cached result cache.
  * Eliminates ~80% of redundant texture cache lookups for consecutive
@@ -54,6 +54,8 @@ static int prim_tex_cache_last = -1; /* last-hit index for fast repeated access 
 void Prim_InvalidateGSState(void)
 {
     gs_state.valid = 0;
+    gs_state.last_cmd_key = -1;
+    gs_state.last_cache_slot = -1;
 }
 
 /* Compute GS CLAMP_1 value for PSX texture window.
@@ -398,6 +400,29 @@ static void emit_poly_state_and_verts(
         }
     }
 
+    /* ── Deferred State: fast-path when cmd attributes + cache unchanged ── */
+    int cmd_key = is_raw_tex | (use_dither << 1) | (is_semi_trans << 2)
+                | (semi_trans_mode << 3) | (is_textured << 5);
+    int state_fast = 0;
+    if (gs_state.valid && cmd_key == gs_state.last_cmd_key)
+    {
+        if (!is_textured)
+            state_fast = 1; /* untextured: dthe+alpha fully determined by cmd_key */
+        else if (cache_hit && prim_tex_cache_last == gs_state.last_cache_slot)
+            state_fast = 1; /* textured: same cache entry → same tex0/clamp/test */
+    }
+
+    int state_qws = 0;
+
+    if (state_fast)
+    {
+        /* All state registers match gs_state → emit only PRIM (1 QW) */
+        Push_GIF_Tag(GIF_TAG_LO(1, 0, 0, 0, 0, 1), GIF_REG_AD);
+        Push_GIF_Data(GS_PACK_PRIM_FROM_INT(prim_reg), GS_REG_PRIM);
+    }
+    else
+    {
+
     /* ── Lazy GS state: pre-compute desired register values ── */
     int want_dthe = use_dither;
     uint64_t want_alpha = is_semi_trans ? Get_Alpha_Reg(semi_trans_mode) : 0;
@@ -455,7 +480,7 @@ static void emit_poly_state_and_verts(
     int emit_clamp   = (is_textured && hw_clut && (!gs_state.valid || gs_state.clamp != want_clamp));
     int emit_texclut = (is_textured && hw_clut && csm &&
                         (!gs_state.valid || gs_state.texclut != want_texclut));
-    int state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
+    state_qws = emit_dthe + emit_alpha + emit_tex0 + (emit_tex0 && need_texflush) + emit_test + emit_clamp + emit_texclut;
 
     /* ── A+D tag: State + PRIM (EOP=0) ── */
     Push_GIF_Tag(GIF_TAG_LO(state_qws + 1, 0, 0, 0, 0, 1), GIF_REG_AD);
@@ -491,6 +516,13 @@ static void emit_poly_state_and_verts(
         }
     }
     gs_state.valid = 1;
+
+    } /* end !state_fast */
+
+    /* Update deferred-state keys for next fast-path check */
+    gs_state.last_cmd_key = cmd_key;
+    if (is_textured)
+        gs_state.last_cache_slot = prim_tex_cache_last;
 
     /* ── REGLIST vertex packet: FLG=1, no PRE ── */
     {
@@ -902,6 +934,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 else if (!gs_state.valid)
                     gs_state.tex0 = ~0ULL;
                 gs_state.valid = 1;
+                gs_state.last_cmd_key = -1;
             }
             else
             {
@@ -1031,6 +1064,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 }
                 gs_state.test = want_test_r;
                 gs_state.valid = 1;
+                gs_state.last_cmd_key = -1;
 
                 /* REGLIST vertex packet: FLG=1, no PRE, NLOOP=2 */
                 {
@@ -1095,6 +1129,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 gs_state.clamp = ~0ULL;
             }
             gs_state.valid = 1;
+            gs_state.last_cmd_key = -1;
 
             /* REGLIST vertex packet: FLG=1, no PRE, NLOOP=2 */
             {

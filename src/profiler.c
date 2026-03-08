@@ -32,8 +32,7 @@ const char *prof_category_names[PROF_NUM] = {
     "SPU AudioFlush",
     "SIO",
     "CDROM",
-    "Scheduler"
-};
+    "Scheduler"};
 
 ProfState prof;
 
@@ -42,9 +41,9 @@ static uint32_t prof_report_num = 0;
 static uint64_t prof_total_frames = 0;
 
 /* Grand totals across all reports */
-static clock_t  prof_grand_ticks[PROF_NUM];
+static clock_t prof_grand_ticks[PROF_NUM];
 static uint32_t prof_grand_calls[PROF_NUM];
-static clock_t  prof_grand_wall = 0;
+static clock_t prof_grand_wall = 0;
 static uint32_t prof_grand_frames = 0;
 static uint64_t prof_grand_psx_cycles = 0;
 static uint32_t prof_grand_jit_blocks = 0;
@@ -63,8 +62,8 @@ static void write_report(FILE *out,
     if (nframes == 0 || total_wall == 0)
         return;
 
-    double total_ms  = (double)total_wall * 1000.0 / CLOCKS_PER_SEC;
-    double avg_ms    = total_ms / nframes;
+    double total_ms = (double)total_wall * 1000.0 / CLOCKS_PER_SEC;
+    double avg_ms = total_ms / nframes;
     double speed_pct = (avg_ms > 0) ? (16.667 / avg_ms * 100.0) : 0;
 
     fprintf(out, "Frame budget : 16.67ms (60fps NTSC)\n");
@@ -80,13 +79,15 @@ static void write_report(FILE *out,
             "Category", "Time(ms)", "%Total", "Calls/f", "Avg(us)");
     fprintf(out, "--------------------------------------------------------------\n");
 
-    for (int i = 0; i < PROF_NUM; i++) {
-        double ms  = (double)ticks[i] * 1000.0 / CLOCKS_PER_SEC;
+    for (int i = 0; i < PROF_NUM; i++)
+    {
+        double ms = (double)ticks[i] * 1000.0 / CLOCKS_PER_SEC;
         double pct = (double)ticks[i] * 100.0 / total_wall;
         double cpf = (double)calls[i] / nframes;
         double avg = (calls[i] > 0) ? (ms * 1000.0 / calls[i]) : 0;
 
-        if (ticks[i] > 0 || calls[i] > 0) {
+        if (ticks[i] > 0 || calls[i] > 0)
+        {
             fprintf(out, "%-20s %9.1f %6.1f%% %9.1f %9.1f\n",
                     prof_category_names[i], ms, pct, cpf, avg);
         }
@@ -94,7 +95,7 @@ static void write_report(FILE *out,
 
     /* Other / Unaccounted */
     {
-        double ms  = (double)other * 1000.0 / CLOCKS_PER_SEC;
+        double ms = (double)other * 1000.0 / CLOCKS_PER_SEC;
         double pct = (double)other * 100.0 / total_wall;
         fprintf(out, "%-20s %9.1f %6.1f%%       -         -\n",
                 "Other/Unaccounted", ms, pct);
@@ -131,7 +132,8 @@ void profiler_init(void)
     prof_total_frames = 0;
 
     prof_log_file = fopen("profile.log", "w");
-    if (prof_log_file) {
+    if (prof_log_file)
+    {
         fprintf(prof_log_file,
                 "SuperPSX Subsystem Profiler Log\n"
                 "===============================\n"
@@ -162,7 +164,8 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
      * We restart the top entry's clock so the next frame doesn't
      * double-count.  Entries below don't need touching — they'll be
      * correctly resumed when the entry above them is prof_pop'd. */
-    if (prof.stack_depth > 0) {
+    if (prof.stack_depth > 0)
+    {
         int top = prof.stack_depth - 1;
         int cat = prof.stack[top];
         prof.ticks[cat] += now - prof.stack_enter[top];
@@ -178,39 +181,46 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
     prof.frame_start_tick = clock();
 
     /* ── Report every N frames ── */
-    if (prof.frames >= PROF_REPORT_INTERVAL) {
+    if (prof.frames >= PROF_REPORT_INTERVAL)
+    {
         prof_report_num++;
 
         /* Accumulate grand totals */
-        for (int i = 0; i < PROF_NUM; i++) {
+        for (int i = 0; i < PROF_NUM; i++)
+        {
             prof_grand_ticks[i] += prof.ticks[i];
             prof_grand_calls[i] += prof.calls[i];
         }
-        prof_grand_wall        += prof.total_wall_ticks;
-        prof_grand_frames      += prof.frames;
-        prof_grand_psx_cycles  += prof.psx_cycles;
-        prof_grand_jit_blocks  += prof.jit_blocks;
-        prof_grand_jit_compiles+= prof.jit_compiles;
-        prof_grand_gpu_pixels  += prof.gpu_pixels;
+        prof_grand_wall += prof.total_wall_ticks;
+        prof_grand_frames += prof.frames;
+        prof_grand_psx_cycles += prof.psx_cycles;
+        prof_grand_jit_blocks += prof.jit_blocks;
+        prof_grand_jit_compiles += prof.jit_compiles;
+        prof_grand_gpu_pixels += prof.gpu_pixels;
 
         /* ---- Console summary (one-liner) ---- */
         {
             double total_ms = (double)prof.total_wall_ticks * 1000.0 / CLOCKS_PER_SEC;
-            double avg_ms   = total_ms / prof.frames;
-            double speed    = (avg_ms > 0) ? (16.667 / avg_ms * 100.0) : 0;
+            double avg_ms = total_ms / prof.frames;
+            double speed = (avg_ms > 0) ? (16.667 / avg_ms * 100.0) : 0;
 
             printf("[PROF #%lu] %.1f%% speed |", (unsigned long)prof_report_num, speed);
-            for (int i = 0; i < PROF_NUM; i++) {
-                if (prof.ticks[i] > 0) {
+            for (int i = 0; i < PROF_NUM; i++)
+            {
+                if (prof.ticks[i] > 0)
+                {
                     double pct = (double)prof.ticks[i] * 100.0 / prof.total_wall_ticks;
                     printf(" %s=%.1f%%", prof_category_names[i], pct);
                 }
             }
             clock_t acc = 0;
-            for (int i = 0; i < PROF_NUM; i++) acc += prof.ticks[i];
+            for (int i = 0; i < PROF_NUM; i++)
+                acc += prof.ticks[i];
             clock_t oth = (prof.total_wall_ticks > acc)
-                          ? (prof.total_wall_ticks - acc) : 0;
-            if (oth > 0) {
+                              ? (prof.total_wall_ticks - acc)
+                              : 0;
+            if (oth > 0)
+            {
                 double opct = (double)oth * 100.0 / prof.total_wall_ticks;
                 printf(" Other=%.1f%%", opct);
             }
@@ -218,7 +228,8 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
         }
 
         /* ---- Detailed file report ---- */
-        if (prof_log_file) {
+        if (prof_log_file)
+        {
             fprintf(prof_log_file,
                     "\n=== Report #%lu (frames %llu-%llu, %lu frames) ===\n",
                     (unsigned long)prof_report_num,
@@ -238,7 +249,8 @@ void profiler_frame_end(uint64_t psx_cycles_this_frame)
             fprintf(prof_log_file, "\n");
 
             /* Grand totals every 5 reports */
-            if ((prof_report_num % 5) == 0) {
+            if ((prof_report_num % 5) == 0)
+            {
                 fprintf(prof_log_file,
                         "\n>>> GRAND TOTAL (frames 0-%llu, %lu frames) <<<\n",
                         (unsigned long long)prof_total_frames,

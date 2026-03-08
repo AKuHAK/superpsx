@@ -100,11 +100,15 @@ static void test_fillrect_black(void)
 }
 
 /* ================================================================
- *  V5: FillRect dirty tracking — fills mark gen dirty
+ *  V5: FillRect does NOT dirty texture gen
+ *
+ *  FillRect writes to the GS framebuffer (FBP) but not to
+ *  texture pages (TBP0).  The shadow VRAM is still updated, but
+ *  vram_gen_counter is NOT bumped — texture pages stay clean.
  * ================================================================ */
 static void test_fillrect_dirty(void)
 {
-    BEGIN_GPU_TEST("fill_dirty");
+    BEGIN_GPU_TEST("fill_nodirty");
     Tex_Cache_Init();
 
     uint32_t gen_before = vram_gen_counter;
@@ -113,12 +117,12 @@ static void test_fillrect_dirty(void)
     EMIT_GP0(0 | (0 << 16));
     EMIT_GP0(16 | (1 << 16));
 
-    /* After FillRect, vram_gen_counter must have incremented */
-    int dirty = (vram_gen_counter != gen_before);
-    if (dirty) {
-        printf("    %-16s: gen dirty OK\n", gp_ctx.name);
+    /* After FillRect, vram_gen_counter must NOT have changed */
+    int still_clean = (vram_gen_counter == gen_before);
+    if (still_clean) {
+        printf("    %-16s: gen NOT dirty OK (FillRect safe)\n", gp_ctx.name);
     } else {
-        printf("  [FAIL] %-16s: gen NOT dirty after FillRect\n", gp_ctx.name);
+        printf("  [FAIL] %-16s: gen dirty after FillRect (should be clean)\n", gp_ctx.name);
         gp_ctx.fail_count++;
     }
 
@@ -216,7 +220,7 @@ static void test_vram_copy_dirty(void)
  * ================================================================ */
 static void test_fill_invalidates_texture(void)
 {
-    BEGIN_GPU_TEST("fill_inval");
+    BEGIN_GPU_TEST("fill_noinval");
     Tex_Cache_Init();
     vram_gen_counter++;
 
@@ -244,13 +248,13 @@ static void test_fill_invalidates_texture(void)
     EMIT_GP0(32 | (32 << 8));
     gp_gif_reset_counter();
 
-    /* FillRect INTO the texture page area — should dirty it */
+    /* FillRect INTO the texture page area — should NOT dirty tex gen */
     EMIT_GP0(0x02FF0000);
     EMIT_GP0(0 | (0 << 16));
     EMIT_GP0(16 | (16 << 16));
     gp_gif_reset_counter();
 
-    /* Draw same textured quad again — must TEXFLUSH (page re-uploaded) */
+    /* Draw same textured quad again — should be HIT (no TEXFLUSH) */
     EMIT_GP0(0x2C808080);
     EMIT_GP0(10 | (10 << 16));
     EMIT_GP0(0 | (0 << 8) | (clut_w << 16));
@@ -262,7 +266,7 @@ static void test_fill_invalidates_texture(void)
     EMIT_GP0(32 | (32 << 8));
 
     gp_gif_scan();
-    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
 
     END_GPU_TEST();
 }

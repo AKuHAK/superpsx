@@ -192,10 +192,13 @@ static void test_fillrect_nonoverlap(void)
 }
 
 /* ================================================================
- *  TC4: FillRect overlapping tex page → correct MISS
+ *  TC4: FillRect overlapping tex page → NO re-upload (FillRect safe)
  *
+ *  FillRect writes to GS framebuffer (FBP) via sprite draw; it does
+ *  NOT modify the GS texture page at TBP0.  Shadow VRAM is updated
+ *  for CPU readback, but the texture gen should NOT be bumped.
  *  Tex page at (0,0) = column 0.  FillRect at (0,0,64,16).
- *  This overlaps the tex page → must re-upload.
+ *  This writes to FB area → tex page SHOULD remain clean → HIT.
  * ================================================================ */
 static void test_fillrect_overlap(void)
 {
@@ -213,12 +216,49 @@ static void test_fillrect_overlap(void)
     Flush_GIF();
     gp_gif_reset_counter();
 
-    /* FillRect overlapping the texture page at (0,0) */
+    /* FillRect overlapping the texture page at (0,0) —
+     * this should NOT dirty the texture page gen */
     EMIT_GP0(0x02FF0000);          /* Red fill */
     EMIT_GP0(0 | (0 << 16));      /* x=0, y=0 */
     EMIT_GP0(64 | (16 << 16));    /* w=64, h=16 */
     Flush_GIF();
     gp_gif_reset_counter();
+
+    /* 2nd draw: HIT expected → no TEXFLUSH (FillRect doesn't dirty tex) */
+    tc_emit_textured_quad(0, page_tx, 0, 0, 480);
+    gp_gif_scan();
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
+
+    END_GPU_TEST();
+}
+
+/* ================================================================
+ *  TC6: DMA / LoadImage overlapping tex page → correct MISS
+ *
+ *  Unlike FillRect, DMA uploads (GP0.A0h LoadImage) write actual
+ *  texture data that MUST trigger re-upload.  We simulate this by
+ *  calling Tex_Cache_DirtyRegion directly (which is what the DMA
+ *  path does) after the initial cache populate.
+ * ================================================================ */
+static void test_dma_overlap(void)
+{
+    BEGIN_GPU_TEST("tc6_dma_ovlp");
+
+    Tex_Cache_Init();
+    int page_tx = 0;
+
+    setup_page(0, 0, 0, 0, 480);
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 256);
+
+    /* 1st draw: populate cache */
+    tc_emit_textured_quad(0, page_tx, 0, 0, 480);
+    Flush_GIF();
+    gp_gif_reset_counter();
+
+    /* Simulate DMA upload that overlaps page at (0,0) */
+    vram_gen_counter++;
+    Tex_Cache_DirtyRegion(0, 0, 64, 16);
 
     /* 2nd draw: MISS expected → TEXFLUSH present */
     tc_emit_textured_quad(0, page_tx, 0, 0, 480);
@@ -286,6 +326,7 @@ void gp_run_texcache_tests(void)
     test_partial_4bpp_small();       /* TC1 */
     test_partial_8bpp_small();       /* TC2 */
     test_fillrect_nonoverlap();      /* TC3 */
-    test_fillrect_overlap();         /* TC4 */
+    test_fillrect_overlap();         /* TC4 — FillRect doesn't dirty tex */
     test_partial_multi_range();      /* TC5 */
+    test_dma_overlap();              /* TC6 — DMA DOES dirty tex */
 }

@@ -770,6 +770,7 @@ static void test_g2a_fillrect_no_overlap(void)
  *
  * Texture at page_tx=2 (hw 128-191, column 2).
  * FillRect at (128,0,64,16) → column 2, row 0. Overlaps texture page!
+ * BUT: FillRect no longer dirties texture gen → cache HIT.
  */
 static void test_g2b_fillrect_tex_overlap(void)
 {
@@ -787,14 +788,15 @@ static void test_g2b_fillrect_tex_overlap(void)
     EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH);
     gp_gif_reset_counter();
 
-    /* FillRect: column 2, row 0 — OVERLAPS texture page */
+    /* FillRect: column 2, row 0 — OVERLAPS texture page
+     * but FillRect doesn't dirty tex gen → cache stays valid */
     emit_fillrect(128, 0, 64, 16, 0xFF0000);
     gp_gif_reset_counter();
 
-    /* 2nd draw: cache MISS (region gen bumped) → TEXFLUSH */
+    /* 2nd draw: cache HIT (FillRect doesn't dirty tex) → no TEXFLUSH */
     emit_textured_quad(2, 0, 0, 480);
     gp_gif_scan();
-    EXPECT_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* must MISS */
+    EXPECT_NO_GIF_REG("TEXFLUSH", GS_REG_TEXFLUSH); /* FillRect safe */
 
     END_GPU_TEST();
 }

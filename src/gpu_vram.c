@@ -18,10 +18,10 @@ void Start_VRAM_Transfer(int x, int y, int w, int h)
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD); // NLOOP=4, EOP=1, A+D
 
     // BITBLTBUF: DBP=0 (Base 0), DBW=16 (1024px), DPSM=CT16S
-    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
 
     // TRXPOS: SSAX=0, SSAY=0, DSAX=x, DSAY=y, DIR=0
-    Push_GIF_Data(GS_SET_TRXPOS(0,0,x,y,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_TRXPOS(0, 0, x, y, 0), GS_REG_TRXPOS);
 
     // TRXREG: RRW=w, RRH=h
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
@@ -39,8 +39,8 @@ void Upload_Shadow_VRAM_Region(int x, int y, int w, int h)
 
     // Set up GS IMAGE transfer for the region
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
-    Push_GIF_Data(GS_SET_TRXPOS(0,0,x,y,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0, 0, x, y, 0), GS_REG_TRXPOS);
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
@@ -130,7 +130,7 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
     rp[5] = GS_REG_TRXPOS; // TRXPOS
     rp[6] = (uint64_t)w_aligned | ((uint64_t)h << 32);
     rp[7] = GS_REG_TRXREG; // TRXREG
-    rp[8] = 1; // TRXDIR = Local→Host
+    rp[8] = 1;             // TRXDIR = Local→Host
     rp[9] = GS_REG_TRXDIR;
 
     dma_channel_send_normal(DMA_CHANNEL_GIF, rb_packet, 5, 0, 0);
@@ -163,8 +163,8 @@ void GS_UploadRegion(int x, int y, int w, int h, const uint16_t *pixels)
 {
     // Set up BITBLTBUF, TRXPOS, TRXREG, TRXDIR for Host→Local
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
-    Push_GIF_Data(GS_SET_TRXPOS(0,0,x,y,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0, 0, x, y, 0), GS_REG_TRXPOS);
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
@@ -235,8 +235,8 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
 
     // Single-pass: shadow VRAM update + STP fixup + GIF IMAGE pack
     Push_GIF_Tag(GIF_TAG_LO(4, 1, 0, 0, 0, 1), GIF_REG_AD);
-    Push_GIF_Data(GS_SET_BITBLTBUF(0,0,0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
-    Push_GIF_Data(GS_SET_TRXPOS(0,0,x,y,0), GS_REG_TRXPOS);
+    Push_GIF_Data(GS_SET_BITBLTBUF(0, 0, 0, 0, PSX_VRAM_FBW, GS_PSM_16S), GS_REG_BITBLTBUF);
+    Push_GIF_Data(GS_SET_TRXPOS(0, 0, x, y, 0), GS_REG_TRXPOS);
     Push_GIF_Data(GS_SET_TRXREG(w, h), GS_REG_TRXREG);
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR); // Host -> Local
 
@@ -256,11 +256,19 @@ void GS_UploadRegionFast(uint32_t coords, uint32_t dims, uint32_t *data_ptr, uin
         {
             if (px < 1024 && py < 512)
                 psx_vram_shadow[py * 1024 + px] = p0;
-            if (++px >= x + w) { px = x; py++; }
+            if (++px >= x + w)
+            {
+                px = x;
+                py++;
+            }
 
             if (px < 1024 && py < 512)
                 psx_vram_shadow[py * 1024 + px] = p1;
-            if (++px >= x + w) { px = x; py++; }
+            if (++px >= x + w)
+            {
+                px = x;
+                py++;
+            }
         }
 
         /* Branchless STP fixup for GIF upload */

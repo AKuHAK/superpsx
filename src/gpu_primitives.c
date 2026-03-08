@@ -1279,8 +1279,16 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         // Update shadow VRAM for filled area
         if (psx_vram_shadow)
         {
-            vram_gen_counter++;
-            Tex_Cache_DirtyRegion(x, y, w, h);
+            /* FillRect writes to the GS framebuffer (FBP) via a sprite
+             * draw.  Texture pages live at separate GS VRAM locations
+             * (TBP0), so the fill does NOT modify texture data in the GS.
+             * Skipping Tex_Cache_DirtyRegion here avoids false texture
+             * invalidation that would otherwise cause 60+ redundant
+             * full-page re-uploads per frame on screen clears.
+             *
+             * DMA uploads (GP0.A0h / GS_UploadRegionFast) and VRAM-to-VRAM
+             * copies (GP0.80h) still dirty-track normally because they
+             * actually modify texture data. */
             uint16_t psx_color = ((r >> 3) & 0x1F) | (((g >> 3) & 0x1F) << 5) | (((b >> 3) & 0x1F) << 10);
             uint32_t fill32 = (uint32_t)psx_color | ((uint32_t)psx_color << 16);
             uint64_t fill64 = (uint64_t)fill32 | ((uint64_t)fill32 << 32);

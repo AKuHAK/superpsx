@@ -19,6 +19,7 @@ void pg_run_all_tests(void)
     pg_run_dirty_tests();
     pg_run_gte_tests();
     pg_run_vu0_micro_tests();
+    pg_run_gte_compare_tests();
 
     /* Expansion ratio report (compile-only, no pass/fail) */
     pg_run_expansion_tests();

@@ -1719,7 +1719,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             switch (gte_func)
             {
             case 0x01: /* RTPS */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     emit_rtps_core(0, gte_sf, gte_lm, 1);
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
@@ -1933,7 +1933,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 int mx = (opcode >> 17) & 3;
                 int v = (opcode >> 15) & 3;
                 int cv = (opcode >> 13) & 3;
-                if (gte_use_vu0 && mx < 3 && cv != 2) {
+                if (gte_use_vu0 && gte_sf && mx < 3 && cv != 2) {
                     /* Inline: mx=0(RT)/1(L)/2(LC), v=0-3, cv=0(TR)/1(BK)/3(none) */
                     emit_inline_mvmva(mx, v, cv, gte_sf, gte_lm);
                 } else {
@@ -1947,7 +1947,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             }
             case 0x13: /* NCDS */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     emit_ncds_core(0, gte_sf, gte_lm);
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
@@ -1958,7 +1958,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x14: /* CDP */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     /* BK + Color × IR → RGBC×IR<<4 → interpolate + push_color */
                     emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
                     emit_rgbc_times_ir_shl4();
@@ -1974,7 +1974,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x16: /* NCDT */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
 #ifndef ENABLE_VU0_MICRO
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
@@ -2000,7 +2000,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1B: /* NCCS */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     emit_nccs_core(0, gte_sf, gte_lm);
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
@@ -2011,7 +2011,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1C: /* CC */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     /* BK + Color × IR → RGBC×IR<<4 → store_mac_ir + push_color */
                     emit_inline_mvmva(2, 3, 1, gte_sf, gte_lm);
                     emit_rgbc_times_ir_shl4();
@@ -2025,7 +2025,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x1E: /* NCS */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     emit_ncs_core(0, gte_sf, gte_lm);
                 } else {
                     EMIT_MOVE(REG_A0, REG_S0);
@@ -2036,7 +2036,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x20: /* NCT */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
 #ifndef ENABLE_VU0_MICRO
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {
@@ -2297,18 +2297,22 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x30: /* RTPT */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
                     /* P18: load RT+TR matrix once, reuse for all 3 vertices. */
                     if (gte_sf) {
 #ifdef ENABLE_VU0_MICRO
                         emit_vu0_micro_prepare(0, 0);
-                        vu0_micro_preloaded[0] = 1;
+                        /* First vertex uses _FULL (loads matrix into VF regs) */
 #else
                         emit_vu0_load_matrix(0, 0, 1);
                         vu0_preloaded[0] = 1;
 #endif
                     }
                     emit_rtps_core(0, gte_sf, gte_lm, 0);
+#ifdef ENABLE_VU0_MICRO
+                    /* After first _FULL, VF1-4 have the matrix → use _CORE for rest */
+                    vu0_micro_preloaded[0] = 1;
+#endif
                     emit_rtps_core(1, gte_sf, gte_lm, 0);
                     emit_rtps_core(2, gte_sf, gte_lm, 1);
 #ifdef ENABLE_VU0_MICRO
@@ -2566,7 +2570,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 }
                 break;
             case 0x3F: /* NCCT */
-                if (gte_use_vu0) {
+                if (gte_use_vu0 && gte_sf) {
 #ifndef ENABLE_VU0_MICRO
                     /* P18 macro: preload L(VF1-4) + LC(VF7-10) once. */
                     if (gte_sf) {

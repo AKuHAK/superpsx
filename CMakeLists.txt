@@ -280,6 +280,7 @@ set(PLAYGROUND_SOURCES
     src/tlb_handler.c
     src/vu0_micro.c
     tests/jit/test_vu0_micro.c
+    tests/jit/test_gte_compare.c
 )
 
 add_executable(jit_playground.elf EXCLUDE_FROM_ALL ${PLAYGROUND_SOURCES})

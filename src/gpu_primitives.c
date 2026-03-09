@@ -102,14 +102,6 @@ void Prim_InvalidateTexCache(void)
     prim_tex_cache_last = -1;
 }
 
-/* Targeted invalidation: only entries referencing a specific CBP slot */
-void Prim_InvalidateTexCache_CBP(int cbp)
-{
-    for (int i = 0; i < PRIM_TEX_CACHE_SIZE; i++)
-        if (prim_tex_cache[i].valid && prim_tex_cache[i].hw_cbp == cbp)
-            prim_tex_cache[i].valid = 0;
-}
-
 /* Targeted invalidation: entries referencing a specific texture page.
  * Called when a page is re-uploaded (format change or VRAM dirty).
  * Direct-mapped: invalidate all 3 format slots for this (x,y). */

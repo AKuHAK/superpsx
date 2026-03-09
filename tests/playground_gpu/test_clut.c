@@ -487,10 +487,9 @@ static void test_prim_cache_format_change(void)
     uint32_t qw_draw2 = gp_ctx.qwords_generated;
 
     /* Draw 3: 4bpp again on SAME page (0,0).
-     * The old 4bpp entry must NOT falsely HIT — the GS page now has
-     * 8bpp-decoded data, so a 4bpp draw must re-upload.
-     * Without the fix: false HIT → qw_draw3 is tiny (just prim data).
-     * With the fix: MISS → re-uploads page (~2048+ QWs). */
+     * With dual-format page slots, 4BPP has its own GS VRAM slot that
+     * was NOT overwritten by the 8BPP draw → cache HIT, no re-upload.
+     * Draw 3 should produce SMALL GIF output (just prim data, no upload). */
     gp_ctx.qwords_generated = 0;
     mock_gif_qwords_written = 0;
     fast_gif_ptr = MOCK_GIF_BUFFER_START;
@@ -498,13 +497,13 @@ static void test_prim_cache_format_change(void)
     Flush_GIF();
     uint32_t qw_draw3 = gp_ctx.qwords_generated;
 
-    /* Draw 1 and Draw 3 should both produce significant GIF output
-     * (page upload).  Draw 3 MUST re-upload, not get a stale HIT. */
-    if (qw_draw3 > qw_draw1 / 2) {
-        printf("    %-16s: d1=%u d2=%u d3=%u QWs (re-upload on fmt change) OK\n",
+    /* With dual-format: Draw 3 should be a HIT (small QW, < draw1/2).
+     * The 4BPP slot was preserved while the 8BPP draw used a different slot. */
+    if (qw_draw3 < qw_draw1 / 2) {
+        printf("    %-16s: d1=%u d2=%u d3=%u QWs (dual-format HIT) OK\n",
                gp_ctx.name, (unsigned)qw_draw1, (unsigned)qw_draw2, (unsigned)qw_draw3);
     } else {
-        printf("  [FAIL] %-16s: d1=%u d2=%u d3=%u QWs (d3 too small — stale cache hit!)\n",
+        printf("  [FAIL] %-16s: d1=%u d2=%u d3=%u QWs (d3 too large — expected dual-format HIT)\n",
                gp_ctx.name, (unsigned)qw_draw1, (unsigned)qw_draw2, (unsigned)qw_draw3);
         gp_ctx.fail_count++;
     }

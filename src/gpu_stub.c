@@ -173,54 +173,6 @@ void DumpVRAM(const char *filename) { (void)filename; }
 
 /* Apply_Tex_Window_U/V are now static inline in gpu_state.h */
 
-int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
-                         int u0, int v0, int tw, int th)
-{
-    (void)clut_x;
-    (void)clut_y;
-    (void)tex_x;
-    (void)tex_y;
-    (void)u0;
-    (void)v0;
-    (void)tw;
-    (void)th;
-    return 0;
-}
-
-int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
-                         int u0, int v0, int tw, int th)
-{
-    (void)clut_x;
-    (void)clut_y;
-    (void)tex_x;
-    (void)tex_y;
-    (void)u0;
-    (void)v0;
-    (void)tw;
-    (void)th;
-    return 0;
-}
-
-int Decode_TexWindow_Rect(int tex_format,
-                          int tpx, int tpy,
-                          int clut_x, int clut_y,
-                          int u0_cmd, int v0_cmd, int w, int h,
-                          int flip_x, int flip_y)
-{
-    (void)tex_format;
-    (void)tpx;
-    (void)tpy;
-    (void)clut_x;
-    (void)clut_y;
-    (void)u0_cmd;
-    (void)v0_cmd;
-    (void)w;
-    (void)h;
-    (void)flip_x;
-    (void)flip_y;
-    return 0;
-}
-
 int Decode_TexPage_Cached(int tex_format,
                           int tpx, int tpy,
                           int clut_x, int clut_y,
@@ -257,7 +209,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd) {
 }
 void Prim_InvalidateGSState(void) {}
 void Prim_InvalidateTexCache(void) {}
-void Prim_InvalidateTexCache_CBP(int cbp) { (void)cbp; }
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y) { (void)tex_page_x; (void)tex_page_y; }
 
 void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,

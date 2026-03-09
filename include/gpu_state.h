@@ -43,10 +43,6 @@
  * async GPU FIFO processing latency). */
 #define GPU_IRQ_DELAY 500
 
-/* ── CLUT decoded texture temp area in GS VRAM ──────────────────── */
-#define CLUT_DECODED_Y 512
-#define CLUT_DECODED_X 0
-
 /* ── GIF Tag structure ───────────────────────────────────────────── */
 typedef struct
 {
@@ -313,15 +309,6 @@ typedef struct {
     uint32_t tex_upload_rows;    /* total rows actually uploaded */
 } gpu_frame_stats_t;
 extern gpu_frame_stats_t gpu_frame_stats;
-int Decode_CLUT4_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
-                         int u0, int v0, int tw, int th);
-int Decode_CLUT8_Texture(int clut_x, int clut_y, int tex_x, int tex_y,
-                         int u0, int v0, int tw, int th);
-int Decode_TexWindow_Rect(int tex_format,
-                          int tex_page_x, int tex_page_y,
-                          int clut_x, int clut_y,
-                          int u0_cmd, int v0_cmd, int w, int h,
-                          int flip_x, int flip_y);
 int Decode_TexPage_Cached(int tex_format,
                           int tex_page_x, int tex_page_y,
                           int clut_x, int clut_y,
@@ -329,10 +316,7 @@ int Decode_TexPage_Cached(int tex_format,
 void Tex_Cache_DumpStats(void);
 void Tex_Cache_ResetStats(void);
 void Tex_Cache_DirtyRegion(int x, int y, int w, int h);
-uint32_t Tex_Cache_GetCombinedGen(int tex_format, int tex_page_x, int tex_page_y,
-                                  int clut_x, int clut_y);
 uint32_t Tex_Cache_GetPageGen(int tex_format, int tex_page_x, int tex_page_y);
-uint32_t Tex_Cache_GetClutUploads(void);
 
 /* gpu_primitives.c — GP0 command translation to GS */
 int Translate_GP0_to_GS(uint32_t *psx_cmd);
@@ -341,7 +325,6 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int is_shaded, int is_semi_trans);
 void Prim_InvalidateGSState(void);
 void Prim_InvalidateTexCache(void);
-void Prim_InvalidateTexCache_CBP(int cbp);
 void Prim_InvalidateTexCache_Page(int tex_page_x, int tex_page_y);
 
 /* gpu_commands.c — GP0/GP1 command processing */

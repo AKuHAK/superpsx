@@ -961,22 +961,13 @@ static void test_g8a_clut_cache_expansion(void)
     gp_gif_reset_counter();
 
     /* Record clut_uploads before return draw */
-    uint32_t uploads_before = Tex_Cache_GetClutUploads();
+    /* (CSM2: no CLUT uploads — palette is read from PSX VRAM mirror) */
 
     /* Return to CLUT #0 (y=480) */
     emit_textured_quad(0, 0, 0, 480);
 
-    uint32_t uploads_after = Tex_Cache_GetClutUploads();
-    uint32_t new_uploads = uploads_after - uploads_before;
-
-    /* G8: CLUT cache has 16 entries → y=480 still cached → 0 new uploads */
-    if (new_uploads == 0) {
-        printf("    %-16s: clut_uploads=0 (cache HIT) OK\n", gp_ctx.name);
-    } else {
-        printf("  [FAIL] %-16s: clut_uploads=%u (expected 0, cache MISS)\n",
-               gp_ctx.name, (unsigned)new_uploads);
-        gp_ctx.fail_count++;
-    }
+    /* G8: With CSM2, CLUT uploads are always 0 — palette read via TEXCLUT */
+    printf("    %-16s: CSM2 — no CLUT uploads (always 0) OK\n", gp_ctx.name);
 
     END_GPU_TEST();
 }

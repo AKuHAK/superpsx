@@ -417,6 +417,50 @@ static void emit_vu0_micro_multiply(int v, int lm, int use_core)
     EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
     emit_ir_sat_store(lm);
 }
+
+/* Emit: write vertex to VU0 data mem + launch micro (no poll/read).
+ * Used for overlapped x3 variants: launch next vertex while EE processes previous.
+ * Clobbers: T8, T9, V0, V1, A0. */
+static void emit_vu0_micro_launch(int v, int use_core)
+{
+    if (v < 3) {
+        int base = v * 2;
+        EMIT_LH(REG_V0, CPU_CP2_DATA(base) + 0, REG_S0);
+        EMIT_LH(REG_V1, CPU_CP2_DATA(base) + 2, REG_S0);
+        EMIT_LH(REG_A0, CPU_CP2_DATA(base + 1), REG_S0);
+    } else {
+        EMIT_LH(REG_V0, CPU_CP2_DATA(9),  REG_S0);
+        EMIT_LH(REG_V1, CPU_CP2_DATA(10), REG_S0);
+        EMIT_LH(REG_A0, CPU_CP2_DATA(11), REG_S0);
+    }
+    emit_load_imm32(REG_T8, VU0_DATA_MEM);
+    EMIT_SW(REG_V0, VU0_OFF_VERTEX + 0,  REG_T8);
+    EMIT_SW(REG_V1, VU0_OFF_VERTEX + 4,  REG_T8);
+    EMIT_SW(REG_A0, VU0_OFF_VERTEX + 8,  REG_T8);
+    EMIT_SW(REG_ZERO, VU0_OFF_VERTEX + 12, REG_T8);
+    int prog_addr = use_core ? VU0_PROG_MVMVA_CORE : VU0_PROG_MVMVA_FULL;
+    EMIT_ORI(REG_T9, REG_ZERO, prog_addr >> 3);
+    EMIT_CTC2(REG_T9, 27);
+    EMIT_VCALLMSR();
+}
+
+/* Emit: poll VU0 completion + read MAC1-3 from VU data mem + store + IR sat.
+ * Clobbers: T8, T9, V0, V1, A0. */
+static void emit_vu0_micro_poll_complete(int lm)
+{
+    EMIT_CFC2(REG_T9, 29);
+    EMIT_ANDI(REG_T9, REG_T9, 1);
+    EMIT_BNE(REG_T9, REG_ZERO, -3);
+    EMIT_NOP();
+    emit_load_imm32(REG_T8, VU0_DATA_MEM);
+    EMIT_LW(REG_V0, VU0_OFF_OUT_MAC + 0,  REG_T8);
+    EMIT_LW(REG_V1, VU0_OFF_OUT_MAC + 4,  REG_T8);
+    EMIT_LW(REG_A0, VU0_OFF_OUT_MAC + 8,  REG_T8);
+    EMIT_SW(REG_V0, CPU_CP2_DATA(25), REG_S0);
+    EMIT_SW(REG_V1, CPU_CP2_DATA(26), REG_S0);
+    EMIT_SW(REG_A0, CPU_CP2_DATA(27), REG_S0);
+    emit_ir_sat_store(lm);
+}
 #endif /* ENABLE_VU0_MICRO */
 
 /* Emit inline MVMVA: MAC = Matrix × Vector + Translation, then store MAC+IR.
@@ -662,11 +706,23 @@ static void emit_ncds_core(int v, int sf, int lm)
  *   XORI  rt,rs,imm: MK_I(0x0E, rs, rt, imm)
  *   SRL   rd,rt,sa: MK_R(0, 0, rt, rd, sa, 0x02)
  */
+static void emit_rtps_project(int sf, int last);
+
 static void emit_rtps_core(int v, int sf, int lm, int last)
 {
     /* Step 1: RT × V + TR → MAC1-3, IR1-3 (inline matrix multiply) */
     emit_inline_mvmva(0, v, 0, sf, lm);
 
+    /* Steps 2-6: SZ push, division, screen projection, SXY push, depth cue */
+    emit_rtps_project(sf, last);
+}
+
+/* Emit RTPS Steps 2-6: SZ FIFO, perspective division, screen projection,
+ * SXY FIFO push, depth cueing.  Assumes MAC1-3 and IR1-3 already stored
+ * to cp2_data by the preceding matrix multiply.
+ * Clobbers: T8, T9, AT, V0, V1, A0, FPU $f0-$f3, HILO. */
+static void emit_rtps_project(int sf, int last)
+{
     /* Step 2: Push SZ FIFO inline.
      * SZ3 = saturate_sz( sf ? MAC3 : MAC3>>12 ) */
     EMIT_LW(REG_T8, CPU_CP2_DATA(27), REG_S0);         /* T8 = MAC3 */
@@ -2298,26 +2354,29 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
                 break;
             case 0x30: /* RTPT */
                 if (gte_use_vu0 && gte_sf) {
-                    /* P18: load RT+TR matrix once, reuse for all 3 vertices. */
-                    if (gte_sf) {
 #ifdef ENABLE_VU0_MICRO
-                        emit_vu0_micro_prepare(0, 0);
-                        /* First vertex uses _FULL (loads matrix into VF regs) */
+                    /* Overlapped VU0 micro: matrix once, overlap multiplies with projections */
+                    emit_vu0_micro_prepare(0, 0);
+                    /* V0: sync multiply (FULL — loads matrix into VF regs) */
+                    emit_vu0_micro_multiply(0, gte_lm, 0);
+                    /* Overlap: launch V1 on VU0 while EE projects V0 */
+                    emit_vu0_micro_launch(1, 1);
+                    emit_rtps_project(gte_sf, 0);
+                    /* Poll V1 completion, store results */
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    /* Overlap: launch V2 on VU0 while EE projects V1 */
+                    emit_vu0_micro_launch(2, 1);
+                    emit_rtps_project(gte_sf, 0);
+                    /* Poll V2 completion, store results */
+                    emit_vu0_micro_poll_complete(gte_lm);
+                    emit_rtps_project(gte_sf, 1);
 #else
-                        emit_vu0_load_matrix(0, 0, 1);
-                        vu0_preloaded[0] = 1;
-#endif
-                    }
+                    /* Macro mode: preload matrix once, reuse for all 3 */
+                    emit_vu0_load_matrix(0, 0, 1);
+                    vu0_preloaded[0] = 1;
                     emit_rtps_core(0, gte_sf, gte_lm, 0);
-#ifdef ENABLE_VU0_MICRO
-                    /* After first _FULL, VF1-4 have the matrix → use _CORE for rest */
-                    vu0_micro_preloaded[0] = 1;
-#endif
                     emit_rtps_core(1, gte_sf, gte_lm, 0);
                     emit_rtps_core(2, gte_sf, gte_lm, 1);
-#ifdef ENABLE_VU0_MICRO
-                    vu0_micro_preloaded[0] = 0;
-#else
                     vu0_preloaded[0] = 0;
 #endif
                 } else {

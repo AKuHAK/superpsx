@@ -957,6 +957,62 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
      * to prevent compile-time dirty-flag leak across paths */
     flush_dirty_consts();
 
+    /* P22: When ISC is cached at block entry AND SMRV proves RAM AND alignment
+     * is known, we can handle ISC purely inline: skip the store if ISC=1.
+     * No cold path entry needed — saves ~14 words (1 NOP + ~13 cold stub).
+     * Layout: LW at,80(sp) / BNE at,zero,@skip / AND at,t8,s3 [delay] /
+     *         ADDU at,at,s1 / SW t9,0(at) / @skip: */
+    int pure_ram_store = block_isc_cached
+                      && smrv_is_known_ram(rs_psx)
+                      && (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
+
+    if (pure_ram_store)
+    {
+        EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+        uint32_t *isc_skip = code_ptr;
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+        emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
+        uint32_t *bp_addu_w = code_ptr;
+        EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
+        uint32_t *bp_fault_w = code_ptr;
+        if (size == 4)
+            EMIT_SW(REG_T9, 0, REG_AT);
+        else if (size == 2)
+            EMIT_SH(REG_T9, 0, REG_AT);
+        else
+            EMIT_SB(REG_T9, 0, REG_AT);
+
+        /* Patch BNE to skip ADDU+store (offset = +2) */
+        int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
+        *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+
+        /* TLB backpatch (if active) */
+        if (psx_tlb_base && tlb_bp_count < MAX_TLB_BP)
+        {
+            TLBBPEntry *p = &tlb_bp_queue[tlb_bp_count++];
+            p->addu_insn = bp_addu_w;
+            p->fault_insn = bp_fault_w;
+            p->return_point = code_ptr;
+            p->func_addr = (size == 4)   ? (uint32_t)WriteWord
+                           : (size == 2) ? (uint32_t)WriteHalf
+                                         : (uint32_t)WriteByte;
+            p->psx_pc = emit_current_psx_pc;
+            p->cycle_offset = (int16_t)emit_cycle_offset;
+            p->type = 1;
+            p->size = (uint8_t)size;
+            p->is_signed = 0;
+            p->load_defer = 0;
+            p->saved_dirty_mask = dyn_dirty_mask;
+            p->rt_psx = 0;
+        }
+
+        /* No cold entry needed — ISC handled inline */
+        reg_cache_invalidate();
+        return;
+    }
+
+    /* --- Generic path: ISC/alignment/range checks with cold slow path --- */
+
     /* Cache Isolation check: if SR.IsC (bit 16) is set, writes to KUSEG/KSEG0
      * must be ignored (it's a cache invalidation, not a real RAM write).
      * When block_isc_cached, the bit is pre-cached in SP+80 (3 words).
@@ -1158,6 +1214,29 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     /* Flush lazy consts before conditional fast/slow split */
     flush_dirty_consts();
 
+    /* P22: Inline ISC skip for SWL/SWR when SMRV proves RAM (same as SW).
+     * SWL/SWR don't need alignment check.  No cold entry needed. */
+    if (block_isc_cached && smrv_is_known_ram(rs_psx))
+    {
+        EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+        uint32_t *isc_skip = code_ptr;
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+        emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
+        EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
+        if (is_left)
+            EMIT_SWL(REG_T9, 0, REG_AT);
+        else
+            EMIT_SWR(REG_T9, 0, REG_AT);
+
+        int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
+        *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+
+        reg_cache_invalidate();
+        return;
+    }
+
+    /* --- Generic path: ISC + range checks with cold slow path --- */
+
     /* Cache Isolation check (cached or inline, same as emit_memory_write) */
     uint32_t *isc_branch;
     if (block_isc_cached)
@@ -1180,6 +1259,7 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
     /* Direct address fast path (S3 = 0x1FFFFFFF, S1 = TLB base or psx_ram) */
     emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and  at, t8, s3 (phys) */
     uint32_t *range_branch = NULL;
+    if (!smrv_is_known_ram(rs_psx))
     {
         emit(MK_R(0, 0, REG_AT, REG_A0, 21, 0x02)); /* srl  a0, at, 21 (range) */
         range_branch = code_ptr;

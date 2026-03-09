@@ -18,6 +18,118 @@
 #include "gpu_state.h"
 #include <string.h> /* memcpy, memset */
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  Fast Aligned Copy (LQ/SQ) — 128-bit load/store for texture upload
+ *
+ *  ee-gcc generates ldl/ldr+sdl/sdr (unaligned 64-bit) for memcpy(),
+ *  even when both src/dst are 16-byte aligned.  The R5900 LQ/SQ
+ *  instructions load/store 128 bits in a single op — 4× fewer insns
+ *  than the unaligned double-word loop.  We also add PREF instructions
+ *  to prefetch the NEXT source row's cache lines while copying the
+ *  current row, hiding the ~80-cycle L1 miss penalty on strided VRAM.
+ *
+ *  4BPP row: 128 bytes = 8 QWs → 8 LQ + 8 SQ = 16 insns  (was ~68)
+ *  8BPP row: 256 bytes = 16 QWs → 16 LQ + 16 SQ = 32 insns (was ~136)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#ifdef _EE /* PS2 EE target — use native 128-bit LQ/SQ */
+
+/* Copy 128 bytes (one 4BPP row) using 8 × LQ/SQ.
+ * Both dst and src MUST be 16-byte aligned.
+ * Prefetch 2 cache lines from next_src (128 bytes ahead). */
+static inline void copy_row_128(void *dst, const void *src, const void *next_src)
+{
+    __asm__ volatile (
+        /* Prefetch next row (2 cache lines = 128 bytes) */
+        "pref 0,  0(%[ns])\n"
+        "pref 0, 64(%[ns])\n"
+        /* Load 8 quadwords from source */
+        "lq $8,   0(%[s])\n"
+        "lq $9,  16(%[s])\n"
+        "lq $10, 32(%[s])\n"
+        "lq $11, 48(%[s])\n"
+        "lq $12, 64(%[s])\n"
+        "lq $13, 80(%[s])\n"
+        "lq $14, 96(%[s])\n"
+        "lq $15,112(%[s])\n"
+        /* Store 8 quadwords to destination */
+        "sq $8,   0(%[d])\n"
+        "sq $9,  16(%[d])\n"
+        "sq $10, 32(%[d])\n"
+        "sq $11, 48(%[d])\n"
+        "sq $12, 64(%[d])\n"
+        "sq $13, 80(%[d])\n"
+        "sq $14, 96(%[d])\n"
+        "sq $15,112(%[d])\n"
+        :
+        : [d] "r"(dst), [s] "r"(src), [ns] "r"(next_src)
+        : "$8","$9","$10","$11","$12","$13","$14","$15","memory"
+    );
+}
+
+/* Copy 256 bytes (one 8BPP row) using 2 × 8 LQ/SQ passes.
+ * Prefetch 4 cache lines from next_src (256 bytes ahead). */
+static inline void copy_row_256(void *dst, const void *src, const void *next_src)
+{
+    __asm__ volatile (
+        /* Prefetch next row (4 cache lines = 256 bytes) */
+        "pref 0,   0(%[ns])\n"
+        "pref 0,  64(%[ns])\n"
+        "pref 0, 128(%[ns])\n"
+        "pref 0, 192(%[ns])\n"
+        /* First 128 bytes */
+        "lq $8,   0(%[s])\n"
+        "lq $9,  16(%[s])\n"
+        "lq $10, 32(%[s])\n"
+        "lq $11, 48(%[s])\n"
+        "lq $12, 64(%[s])\n"
+        "lq $13, 80(%[s])\n"
+        "lq $14, 96(%[s])\n"
+        "lq $15,112(%[s])\n"
+        "sq $8,   0(%[d])\n"
+        "sq $9,  16(%[d])\n"
+        "sq $10, 32(%[d])\n"
+        "sq $11, 48(%[d])\n"
+        "sq $12, 64(%[d])\n"
+        "sq $13, 80(%[d])\n"
+        "sq $14, 96(%[d])\n"
+        "sq $15,112(%[d])\n"
+        /* Second 128 bytes */
+        "lq $8, 128(%[s])\n"
+        "lq $9, 144(%[s])\n"
+        "lq $10,160(%[s])\n"
+        "lq $11,176(%[s])\n"
+        "lq $12,192(%[s])\n"
+        "lq $13,208(%[s])\n"
+        "lq $14,224(%[s])\n"
+        "lq $15,240(%[s])\n"
+        "sq $8, 128(%[d])\n"
+        "sq $9, 144(%[d])\n"
+        "sq $10,160(%[d])\n"
+        "sq $11,176(%[d])\n"
+        "sq $12,192(%[d])\n"
+        "sq $13,208(%[d])\n"
+        "sq $14,224(%[d])\n"
+        "sq $15,240(%[d])\n"
+        :
+        : [d] "r"(dst), [s] "r"(src), [ns] "r"(next_src)
+        : "$8","$9","$10","$11","$12","$13","$14","$15","memory"
+    );
+}
+
+#else /* Host / test builds — plain memcpy fallback */
+static inline void copy_row_128(void *dst, const void *src, const void *next_src)
+{
+    (void)next_src;
+    memcpy(dst, src, 128);
+}
+static inline void copy_row_256(void *dst, const void *src, const void *next_src)
+{
+    (void)next_src;
+    memcpy(dst, src, 256);
+}
+#endif
+
 /* Static decode buffer — avoids memalign/free per call (max 256×256 texels) */
 static uint16_t decode_buf[256 * 256] __attribute__((aligned(64)));
 
@@ -268,19 +380,17 @@ static void Upload_Indexed_8BPP(int tbp0, int tex_page_x, int tex_page_y)
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
     /* 256×256 8BPP = 64KB = 4096 QWs.  Split into 4 chunks of 1024 QWs
-     * (64 rows each) for GIF buffer safety.  Direct memcpy from VRAM
-     * shadow eliminates per-QW loop overhead of the old buf_image path. */
+     * (64 rows each).  Uses LQ/SQ for 4× fewer instructions vs memcpy. */
     for (int chunk = 0; chunk < 4; chunk++)
     {
         int eop = (chunk == 3) ? 1 : 0;
+        int base_row = chunk * 64;
         Push_GIF_Tag(GIF_TAG_LO(1024, eop, 0, 0, 2, 0), 0);
-        for (int row = chunk * 64; row < (chunk + 1) * 64; row++)
+        for (int row = base_row; row < base_row + 64; row++)
         {
-            /* 256 bytes/row = 16 QWs.  Source is uint16_t* reinterpreted
-             * as raw bytes (little-endian, natural PSMT8 order). */
-            memcpy(fast_gif_ptr,
-                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
-                   256);
+            const void *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
+            const void *next = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row + 1) * 1024 + tex_page_x];
+            copy_row_256(fast_gif_ptr, src, next);
             fast_gif_ptr += 16;
         }
     }
@@ -311,9 +421,9 @@ static void Upload_Indexed_8BPP_Partial(int tbp0, int tex_page_x, int tex_page_y
         Push_GIF_Tag(GIF_TAG_LO(chunk_qws, eop, 0, 0, 2, 0), 0);
         for (int r = 0; r < chunk_rows; r++, row++)
         {
-            memcpy(fast_gif_ptr,
-                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
-                   256);
+            const void *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
+            const void *next = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row + 1) * 1024 + tex_page_x];
+            copy_row_256(fast_gif_ptr, src, next);
             fast_gif_ptr += 16;
         }
         qws_sent += chunk_qws;
@@ -331,19 +441,17 @@ static void Upload_Indexed_4BPP(int tbp0, int tex_page_x, int tex_page_y)
     Push_GIF_Data(GS_SET_TRXDIR(0), GS_REG_TRXDIR);
 
     /* 256×256 4BPP = 32KB = 2048 QWs.  Split into 2 chunks of 1024 QWs
-     * (128 rows each) for GIF buffer safety.  Direct memcpy from VRAM
-     * shadow eliminates per-QW loop overhead of the old buf_image path. */
+     * (128 rows each).  Uses LQ/SQ for 4× fewer instructions vs memcpy. */
     for (int chunk = 0; chunk < 2; chunk++)
     {
         int eop = (chunk == 1) ? 1 : 0;
+        int base_row = chunk * 128;
         Push_GIF_Tag(GIF_TAG_LO(1024, eop, 0, 0, 2, 0), 0);
-        for (int row = chunk * 128; row < (chunk + 1) * 128; row++)
+        for (int row = base_row; row < base_row + 128; row++)
         {
-            /* 128 bytes/row = 8 QWs.  Source is uint16_t* reinterpreted
-             * as raw bytes (little-endian, natural PSMT4 nibble order). */
-            memcpy(fast_gif_ptr,
-                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
-                   128);
+            const void *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
+            const void *next = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row + 1) * 1024 + tex_page_x];
+            copy_row_128(fast_gif_ptr, src, next);
             fast_gif_ptr += 8;
         }
     }
@@ -373,9 +481,9 @@ static void Upload_Indexed_4BPP_Partial(int tbp0, int tex_page_x, int tex_page_y
         Push_GIF_Tag(GIF_TAG_LO(chunk_qws, eop, 0, 0, 2, 0), 0);
         for (int r = 0; r < chunk_rows; r++, row++)
         {
-            memcpy(fast_gif_ptr,
-                   (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x],
-                   128);
+            const void *src = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row) * 1024 + tex_page_x];
+            const void *next = (const uint8_t *)&psx_vram_shadow[(tex_page_y + row + 1) * 1024 + tex_page_x];
+            copy_row_128(fast_gif_ptr, src, next);
             fast_gif_ptr += 8;
         }
         qws_sent += chunk_qws;

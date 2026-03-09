@@ -473,6 +473,7 @@ void pg_run_block_tests(void);    /* test_block.c  */
 void pg_run_dirty_tests(void);    /* test_dirty.c  */
 void pg_run_gte_tests(void);      /* test_gte.c    */
 void pg_run_expansion_tests(void); /* test_expansion.c */
+void pg_run_vu0_micro_tests(void); /* test_vu0_micro.c */
 
 /* Master runner — calls all category runners above */
 void pg_run_all_tests(void);

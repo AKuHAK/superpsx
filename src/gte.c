@@ -1390,13 +1390,13 @@ void GTE_Execute(uint32_t opcode, R3000CPU *cpu)
 #ifdef _EE /* PS2 EE target only */
 
 /* Aligned float buffers for VU0 register loads */
-static float vu0_rt_col1[4] __attribute__((aligned(16)));
-static float vu0_rt_col2[4] __attribute__((aligned(16)));
-static float vu0_rt_col3[4] __attribute__((aligned(16)));
-static float vu0_rt_trans[4] __attribute__((aligned(16)));
+float vu0_rt_col1[4] __attribute__((aligned(16)));
+float vu0_rt_col2[4] __attribute__((aligned(16)));
+float vu0_rt_col3[4] __attribute__((aligned(16)));
+float vu0_rt_trans[4] __attribute__((aligned(16)));
 static uint32_t vu0_rt_snapshot[8]; /* ctrl[0..7] snapshot for dirty check */
 
-static void vu0_refresh_rt_matrix(R3000CPU *cpu)
+void vu0_refresh_rt_matrix(R3000CPU *cpu)
 {
     /* Extract rotation matrix (9 × int16) */
     int16_t r11 = lo16(C(c_RT11RT12)), r12 = hi16(C(c_RT11RT12));
@@ -1440,7 +1440,7 @@ static void vu0_refresh_rt_matrix(R3000CPU *cpu)
         vu0_rt_snapshot[i] = C(i);
 }
 
-static inline int vu0_rt_is_dirty(R3000CPU *cpu)
+int vu0_rt_is_dirty(R3000CPU *cpu)
 {
     for (int i = 0; i < 8; i++)
         if (vu0_rt_snapshot[i] != C(i))
@@ -1572,12 +1572,12 @@ static void gte_cmd_rtpt_vu0(R3000CPU *cpu, int lm)
  * ================================================================ */
 
 /* Light matrix cached float columns (mx=1, ctrl[8..12]) */
-static float vu0_lt_col1[4] __attribute__((aligned(16)));
-static float vu0_lt_col2[4] __attribute__((aligned(16)));
-static float vu0_lt_col3[4] __attribute__((aligned(16)));
+float vu0_lt_col1[4] __attribute__((aligned(16)));
+float vu0_lt_col2[4] __attribute__((aligned(16)));
+float vu0_lt_col3[4] __attribute__((aligned(16)));
 static uint32_t vu0_lt_snapshot[5];
 
-static void vu0_refresh_lt_matrix(R3000CPU *cpu)
+void vu0_refresh_lt_matrix(R3000CPU *cpu)
 {
     int16_t l11 = lo16(C(c_L11L12)), l12 = hi16(C(c_L11L12));
     int16_t l13 = lo16(C(c_L13L21)), l21 = hi16(C(c_L13L21));
@@ -1603,7 +1603,7 @@ static void vu0_refresh_lt_matrix(R3000CPU *cpu)
         vu0_lt_snapshot[i] = C(8 + i);
 }
 
-static inline int vu0_lt_is_dirty(R3000CPU *cpu)
+int vu0_lt_is_dirty(R3000CPU *cpu)
 {
     for (int i = 0; i < 5; i++)
         if (vu0_lt_snapshot[i] != C(8 + i))
@@ -1612,12 +1612,12 @@ static inline int vu0_lt_is_dirty(R3000CPU *cpu)
 }
 
 /* Color matrix cached float columns (mx=2, ctrl[16..20]) */
-static float vu0_lc_col1[4] __attribute__((aligned(16)));
-static float vu0_lc_col2[4] __attribute__((aligned(16)));
-static float vu0_lc_col3[4] __attribute__((aligned(16)));
+float vu0_lc_col1[4] __attribute__((aligned(16)));
+float vu0_lc_col2[4] __attribute__((aligned(16)));
+float vu0_lc_col3[4] __attribute__((aligned(16)));
 static uint32_t vu0_lc_snapshot[5];
 
-static void vu0_refresh_lc_matrix(R3000CPU *cpu)
+void vu0_refresh_lc_matrix(R3000CPU *cpu)
 {
     int16_t lr1 = lo16(C(c_LR1LR2)), lr2 = hi16(C(c_LR1LR2));
     int16_t lr3 = lo16(C(c_LR3LG1)), lg1 = hi16(C(c_LR3LG1));
@@ -1643,7 +1643,7 @@ static void vu0_refresh_lc_matrix(R3000CPU *cpu)
         vu0_lc_snapshot[i] = C(16 + i);
 }
 
-static inline int vu0_lc_is_dirty(R3000CPU *cpu)
+int vu0_lc_is_dirty(R3000CPU *cpu)
 {
     for (int i = 0; i < 5; i++)
         if (vu0_lc_snapshot[i] != C(16 + i))
@@ -1652,10 +1652,10 @@ static inline int vu0_lc_is_dirty(R3000CPU *cpu)
 }
 
 /* BK translation cached float (cv=1, ctrl[13..15]) */
-static float vu0_bk_trans[4] __attribute__((aligned(16)));
+float vu0_bk_trans[4] __attribute__((aligned(16)));
 static uint32_t vu0_bk_snapshot[3];
 
-static void vu0_refresh_bk_trans(R3000CPU *cpu)
+void vu0_refresh_bk_trans(R3000CPU *cpu)
 {
     vu0_bk_trans[0] = (float)(int32_t)C(c_RBK);
     vu0_bk_trans[1] = (float)(int32_t)C(c_GBK);
@@ -1666,7 +1666,7 @@ static void vu0_refresh_bk_trans(R3000CPU *cpu)
         vu0_bk_snapshot[i] = C(c_RBK + i);
 }
 
-static inline int vu0_bk_is_dirty(R3000CPU *cpu)
+int vu0_bk_is_dirty(R3000CPU *cpu)
 {
     for (int i = 0; i < 3; i++)
         if (vu0_bk_snapshot[i] != C(c_RBK + i))
@@ -1675,7 +1675,7 @@ static inline int vu0_bk_is_dirty(R3000CPU *cpu)
 }
 
 /* Zero translation for cv=3 (None) */
-static float vu0_zero_trans[4] __attribute__((aligned(16))) = {0.0f, 0.0f, 0.0f, 0.0f};
+float vu0_zero_trans[4] __attribute__((aligned(16))) = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* MVMVA VU0: generic matrix × vector + translation (sf=1 only) */
 static void gte_mvmva_vu0(R3000CPU *cpu, int lm, int mx, int v, int cv)

@@ -29,6 +29,7 @@ option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" OFF)
 option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
 option(ENABLE_PSX_TLB "Enable TLB fast-path for PSX RAM (experimental)" OFF)
 option(ENABLE_TEX_DEBUG "Enable texture debug overlay (colored bounding boxes)" OFF)
+option(ENABLE_VU0_MICRO "Use VU0 micro mode for GTE acceleration" OFF)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================
@@ -74,6 +75,7 @@ set(SUPERPSX_SOURCES
     src/iso_fs.c
     src/profiler.c
     src/tlb_handler.c
+    src/vu0_micro.c
 )
 
 # ============================================================================
@@ -118,6 +120,10 @@ endif()
 
 if(ENABLE_TEX_DEBUG)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE TEX_DEBUG_OVERLAY)
+endif()
+
+if(ENABLE_VU0_MICRO)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_VU0_MICRO)
 endif()
 
 if(HEADLESS)
@@ -235,6 +241,8 @@ set(PLAYGROUND_SOURCES
     src/dynarec_insn.c
     src/dynarec_run.c
     src/tlb_handler.c
+    src/vu0_micro.c
+    tests/jit/test_vu0_micro.c
 )
 
 add_executable(jit_playground.elf EXCLUDE_FROM_ALL ${PLAYGROUND_SOURCES})
@@ -246,7 +254,7 @@ target_include_directories(jit_playground.elf PRIVATE
 )
 
 target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall)
-target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND)
+target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND ENABLE_VU0_MICRO)
 
 target_link_libraries(jit_playground.elf PRIVATE
     -lpatches

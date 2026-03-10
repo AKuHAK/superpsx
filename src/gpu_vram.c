@@ -138,6 +138,9 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
 
     // Receive via VIF1 DMA (reverse GIF bus for GS→EE readback)
     *GS_REG_BUSDIR = (uint64_t)1;
+    /* Invalidate dcache for the receive buffer so DMA data is visible
+     * through cached access (avoids KSEG1 uncached pointer hack). */
+    SyncDCache(buf, (void *)((uintptr_t)buf + (uint32_t)buf_qwc * 16));
     uint32_t phys = (uint32_t)buf & 0x1FFFFFFF;
     uint32_t rem = buf_qwc;
     uint32_t addr = phys;
@@ -154,7 +157,7 @@ uint16_t *GS_ReadbackRegion(int x, int y, int w_aligned, int h, void *buf, int b
     }
     *GS_REG_BUSDIR = (uint64_t)0;
 
-    return (uint16_t *)((uint32_t)buf | 0xA0000000);
+    return (uint16_t *)buf;
 }
 
 /* ── Upload decoded 16-bit pixels to GS VRAM as an IMAGE transfer ── */
@@ -384,6 +387,8 @@ void DumpVRAM(const char *filename)
 
     // 5. Receive data via VIF1 DMA (reverse GIF bus for GS→EE readback)
     *GS_REG_BUSDIR = (uint64_t)1;
+    /* Invalidate dcache so DMA data is visible through cached access. */
+    SyncDCache(buf, (void *)((uintptr_t)buf + (uint32_t)qwc * 16));
     uint32_t phys_addr = (uint32_t)buf & 0x1FFFFFFF;
     uint32_t remaining_qwc = qwc;
     uint32_t current_addr = phys_addr;
@@ -404,11 +409,9 @@ void DumpVRAM(const char *filename)
     }
     *GS_REG_BUSDIR = (uint64_t)0;
 
-    // 6. Read via uncached access and save to file
-    uint8_t *uncached_buf = (uint8_t *)(phys_addr | 0xA0000000);
-
+    // 6. Save to file
 #ifdef ENABLE_VRAM_DUMP
-    uint16_t *p = (uint16_t *)uncached_buf;
+    uint16_t *p = (uint16_t *)buf;
     DLOG("DumpVRAM: First pixel: %04X\n", p[0]);
     DLOG("DumpVRAM: Center pixel: %04X\n", p[(512 * 1024 / 2) + 512]);
     fflush(stdout);
@@ -418,7 +421,7 @@ void DumpVRAM(const char *filename)
     if (fd >= 0)
     {
         ssize_t remaining = size_bytes;
-        uint8_t *ptr = uncached_buf;
+        uint8_t *ptr = (uint8_t *)buf;
         while (remaining > 0)
         {
             ssize_t w = write(fd, ptr, remaining);

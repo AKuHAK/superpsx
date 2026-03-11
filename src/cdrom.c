@@ -12,6 +12,7 @@
 #include "superpsx.h"
 #include "scheduler.h"
 #include "iso_image.h"
+#include "config.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -208,6 +209,9 @@ static void cdrom_queue_pending(const uint8_t *data, int count, uint8_t irq_type
     cdrom.pending_count = count;
     cdrom.pending_int = irq_type;
     cdrom.has_pending = 1;
+    /* cdrom_fast: skip realistic delays for faster boot/loading */
+    if (psx_config.cdrom_fast)
+        delay_cycles = 200;
     cdrom.pending_deadline = global_cycles + delay_cycles;
 }
 

@@ -48,6 +48,7 @@ int load_config_file(void)
     psx_config.gte_vu0 = 1;
     psx_config.show_fps = 0;
     psx_config.perf_report = 0;
+    psx_config.cdrom_fast = 0;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -176,6 +177,11 @@ int load_config_file(void)
         {
             psx_config.perf_report = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: perf_report = %d\n", psx_config.perf_report);
+        }
+        else if (strcasecmp(key, "cdrom_fast") == 0)
+        {
+            psx_config.cdrom_fast = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
+            printf("CONFIG: cdrom_fast = %d\n", psx_config.cdrom_fast);
         }
         line = next;
     }

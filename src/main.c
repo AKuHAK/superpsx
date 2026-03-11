@@ -34,6 +34,9 @@ int psx_boot_mode = BOOT_MODE_EXE;
 static const char **psx_host_args = NULL;
 static int psx_host_argc = 0;
 
+/* Optional disc image path (second argument, mounted alongside EXE boot) */
+static char disc_image_path[PSX_EXE_PATH_MAX] = "";
+
 /* Check if a filename has a disc image extension */
 static int has_disc_extension(const char *filename)
 {
@@ -120,9 +123,20 @@ int main(int argc, char *argv[])
         psx_config.boot_bios_only = 0;
         printf("Using PSX exe from argv: %s (cwd set to %s)\n", psx_exe_filename, argv[0]);
 
-        /* Capture any remaining command-line args (after the exe filename)
-         * and expose them to the PSX executable via scratchpad. */
-        if (argc > 2)
+        /* Check remaining args for a disc image (second arg with disc extension) */
+        if (argc > 2 && has_disc_extension(argv[2]))
+        {
+            strncpy(disc_image_path, argv[2], PSX_EXE_PATH_MAX - 1);
+            disc_image_path[PSX_EXE_PATH_MAX - 1] = '\0';
+            printf("Disc image from argv: %s\n", disc_image_path);
+            /* Remaining PSX args start after the disc image */
+            if (argc > 3)
+            {
+                psx_host_argc = argc - 3;
+                psx_host_args = (const char **)&argv[3];
+            }
+        }
+        else if (argc > 2)
         {
             psx_host_argc = argc - 2;
             psx_host_args = (const char **)&argv[2];
@@ -240,6 +254,26 @@ void Init_SuperPSX(void)
         else
         {
             psx_boot_mode = BOOT_MODE_EXE;
+
+            /* Mount disc image alongside EXE if provided via second arg */
+            if (disc_image_path[0] != '\0')
+            {
+                int open_result;
+                if (has_cue_extension(disc_image_path))
+                    open_result = ISO_OpenCue(disc_image_path);
+                else
+                    open_result = ISO_Open(disc_image_path);
+
+                if (open_result >= 0)
+                {
+                    CDROM_InsertDisc();
+                    osd_boot_log("Disc: %s (sideload)", disc_image_path);
+                }
+                else
+                {
+                    osd_boot_log("WARNING: Failed to open disc: %s", disc_image_path);
+                }
+            }
         }
     }
     else

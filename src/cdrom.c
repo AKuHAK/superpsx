@@ -27,6 +27,17 @@
 #define LEADOUT_LBA 333000  /* 74:00:00 - lead-out area starts here */
 #define PREGAP_LBA 150      /* 00:02:00 - data area starts here */
 
+/* ---- Pending (INT2/INT5) response delays (cycles from command issue) ----
+ * Derived from hardware measurements: reference ticks × 8. */
+#define PENDING_DELAY_INIT      3800000U  /* ~114ms — motor/head init */
+#define PENDING_DELAY_PAUSE     8000000U  /* ~240ms — brake spindle */
+#define PENDING_DELAY_STOP      6000000U  /* ~180ms — full motor stop */
+#define PENDING_DELAY_MOTORON   3000000U  /* ~90ms  — motor spinup */
+#define PENDING_DELAY_GETID      800000U  /* ~24ms  — disc identification */
+#define PENDING_DELAY_SEEKL     1000000U  /* ~30ms  — seek completion */
+#define PENDING_DELAY_READTOC  16000000U  /* ~480ms — full TOC read */
+#define PENDING_DELAY_DEFAULT    200000U  /* ~6ms   — generic fallback */
+
 /* ---- BCD helpers ---- */
 static uint8_t dec_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 static int bcd_to_dec(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
@@ -91,6 +102,7 @@ static struct
     uint8_t disc_present;   /* 0 = no disc (ShellOpen), 1 = disc inserted */
     int32_t read_delay;     /* Cycles until next INT1 delivery (legacy, used for state) */
     int32_t pending_delay;  /* Cycles until pending response delivery (legacy) */
+    uint64_t pending_deadline; /* Absolute cycle when pending response becomes ready */
     uint8_t seek_pending;       /* 1 = seek is in progress, waiting for scheduler */
     uint8_t location_changed;   /* 1 = SetLoc was issued, first sector gets extra delay */
 
@@ -186,8 +198,9 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
                             CDROM_DeferredCallback);
 }
 
-/* ---- Queue a pending (second) response ---- */
-static void cdrom_queue_pending(const uint8_t *data, int count, uint8_t irq_type)
+/* ---- Queue a pending (second) response with delay ---- */
+static void cdrom_queue_pending(const uint8_t *data, int count, uint8_t irq_type,
+                                uint32_t delay_cycles)
 {
     if (count > RESPONSE_FIFO_SIZE)
         count = RESPONSE_FIFO_SIZE;
@@ -195,14 +208,21 @@ static void cdrom_queue_pending(const uint8_t *data, int count, uint8_t irq_type
     cdrom.pending_count = count;
     cdrom.pending_int = irq_type;
     cdrom.has_pending = 1;
+    cdrom.pending_deadline = global_cycles + delay_cycles;
 }
 
 /* ---- Execute a CD-ROM command ---- */
+static uint32_t cdrom_cmd_count = 0;  /* progress counter */
+
 static void cdrom_execute_command(uint8_t cmd)
 {
     uint8_t resp[16];
 
     cdrom.last_cmd = cmd;
+
+    /* Progress heartbeat every 500 commands */
+    if (++cdrom_cmd_count % 500 == 0)
+        printf("[CDROM] %u commands processed\n", cdrom_cmd_count);
 
     switch (cmd)
     {
@@ -260,7 +280,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
-        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_MOTORON); /* INT2 */
         break;
 
     case 0x08: /* Stop */
@@ -270,7 +290,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
-        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_STOP); /* INT2 */
         break;
 
     case 0x09: /* Pause */
@@ -280,7 +300,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
-        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_PAUSE); /* INT2 */
         break;
 
     case 0x0A: /* Init / Reset */
@@ -299,7 +319,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
-        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_INIT); /* INT2 */
         break;
     }
 
@@ -470,7 +490,7 @@ static void cdrom_execute_command(uint8_t cmd)
             cdrom_queue_response(resp, 1, 3); /* INT3 */
             resp[0] = cdrom.stat;
             resp[1] = 0x04;                  /* Seek error code */
-            cdrom_queue_pending(resp, 2, 5); /* INT5 error */
+            cdrom_queue_pending(resp, 2, 5, PENDING_DELAY_SEEKL); /* INT5 error */
         }
         else
         {
@@ -482,7 +502,7 @@ static void cdrom_execute_command(uint8_t cmd)
             resp[0] = cdrom.stat;
             cdrom_queue_response(resp, 1, 3); /* INT3 */
             resp[0] = cdrom.stat;
-            cdrom_queue_pending(resp, 1, 2); /* INT2 complete */
+            cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_SEEKL); /* INT2 complete */
         }
         break;
     }
@@ -531,7 +551,7 @@ static void cdrom_execute_command(uint8_t cmd)
             resp[5] = 'C';
             resp[6] = 'E';
             resp[7] = 'A';
-            cdrom_queue_pending(resp, 8, 2); /* INT2 = complete */
+            cdrom_queue_pending(resp, 8, 2, PENDING_DELAY_GETID); /* INT2 = complete */
         }
         else
         {
@@ -549,7 +569,7 @@ static void cdrom_execute_command(uint8_t cmd)
             resp[5] = 0x00;
             resp[6] = 0x00;
             resp[7] = 0x00;
-            cdrom_queue_pending(resp, 8, 5); /* INT5 error */
+            cdrom_queue_pending(resp, 8, 5, PENDING_DELAY_GETID); /* INT5 error */
         }
         break;
     }
@@ -577,7 +597,7 @@ static void cdrom_execute_command(uint8_t cmd)
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
         resp[0] = cdrom.stat;
-        cdrom_queue_pending(resp, 1, 2); /* INT2 */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_READTOC); /* INT2 */
         break;
 
     default:
@@ -804,14 +824,25 @@ static void CDROM_DeferredCallback(void)
         cdrom_deliver_deferred();
 }
 
+/* ---- Check if current int_flag type is enabled in int_enable ---- */
+static inline int cdrom_irq_should_signal(void)
+{
+    /* int_flag holds a value 0-5 (INT type).
+     * int_enable bits 0-4 correspond to INT types 1-5.
+     * Assertion: int_flag != 0 AND bit (int_flag-1) of int_enable is set. */
+    return cdrom.int_flag != 0 &&
+           (cdrom.int_enable & (1 << (cdrom.int_flag - 1)));
+}
+
 /* ---- Scheduler callback: activate IRQ after signal delay ---- */
 static void CDROM_DeferredIRQActivate(void)
 {
-    if (cdrom.int_flag != 0)
-    {
-        cdrom_irq_active = 1;
-        SignalInterrupt(2); /* Initial I_STAT assertion */
-    }
+    /* Always mark IRQ as active (level-triggered).  If int_enable doesn't
+     * currently allow signaling, the interrupt will fire when the game
+     * writes int_enable to unmask it (see int_enable write handler). */
+    cdrom_irq_active = 1;
+    if (cdrom_irq_should_signal())
+        SignalInterrupt(2);
 }
 
 /* ---- Write CD-ROM register ---- */
@@ -855,6 +886,12 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             break;
         case 1: /* Interrupt Enable Register */
             cdrom.int_enable = val & 0x1F;
+            /* If an IRQ is pending and now unmasked, fire it. */
+            if (cdrom_irq_should_signal() && !cdrom_irq_active)
+            {
+                cdrom_irq_active = 1;
+                SignalInterrupt(2);
+            }
             break;
         case 2: /* Audio Volume Left→Left */
             break;
@@ -895,13 +932,15 @@ void CDROM_Write(uint32_t addr, uint32_t data)
                 /* Reset parameter FIFO */
                 cdrom.param_count = 0;
             }
-            /* Schedule pending delivery after a short delay so the
-             * current IRQ handler can finish reading the response
-             * FIFO before it's overwritten by the pending response. */
+            /* Schedule pending delivery: wait for the real hardware delay
+             * before delivering the second response (INT2). */
             if (cdrom.has_pending && cdrom.int_flag == 0)
             {
+                uint64_t deliver_at = cdrom.pending_deadline;
+                if (deliver_at <= global_cycles)
+                    deliver_at = global_cycles + 200; /* Already ready — small handshake */
                 Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_PENDING,
-                                        global_cycles + 200,
+                                        deliver_at,
                                         CDROM_PendingCallback);
             }
             break;

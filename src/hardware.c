@@ -9,6 +9,7 @@
 #include "psx_sio.h"
 #include "spu.h"
 #include "gpu_state.h"
+#include "mdec.h"
 
 #ifdef LOG_TAG
 #undef LOG_TAG
@@ -80,9 +81,9 @@ uint32_t ReadHardware(uint32_t phys)
         if (phys == 0x1F801814)
             return GPU_ReadStatus();
         if (phys == 0x1F801820)
-            return 0;
+            return MDEC_ReadData();
         if (phys == 0x1F801824)
-            return 0x80040000;
+            return MDEC_ReadStatus();
         return 0;
 
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */
@@ -193,7 +194,15 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             GPU_WriteGP1(data);
             return;
         }
-        /* MDEC writes (0x1F801820, 0x1F801824) — stub */
+        /* MDEC writes */
+        if (phys == 0x1F801820) {
+            MDEC_WriteCommand(data);
+            return;
+        }
+        if (phys == 0x1F801824) {
+            MDEC_WriteControl(data);
+            return;
+        }
         return;
 
     case 0x0C: /* 0x1F801C00-0x1F801CFF: SPU (low half) */

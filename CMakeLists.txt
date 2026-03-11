@@ -57,6 +57,7 @@ set(SUPERPSX_SOURCES
     src/cpu.c
     src/hardware.c
     src/dma.c
+    src/mdec.c
     src/sio.c
     src/timers.c
     ${GPU_SOURCES}

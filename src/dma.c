@@ -3,6 +3,7 @@
 #include "spu.h"
 #include "superpsx.h"
 #include "dynarec.h" /* for jit_invalidate_page */
+#include "mdec.h"
 #include <stdint.h>
 
 typedef struct {
@@ -180,7 +181,13 @@ void DMA_Write(uint32_t addr, uint32_t data) {
 
           /* Execute the actual data transfer */
           int dma_stalled = 0;
-          if (ch == 2)
+          if (ch == 0)
+            MDEC_DMA0(dma_channels[ch].madr, dma_channels[ch].bcr,
+                      dma_channels[ch].chcr);
+          else if (ch == 1)
+            MDEC_DMA1(dma_channels[ch].madr, dma_channels[ch].bcr,
+                      dma_channels[ch].chcr);
+          else if (ch == 2)
             dma_stalled = GPU_DMA2(dma_channels[ch].madr, dma_channels[ch].bcr,
                      dma_channels[ch].chcr);
           else if (ch == 3)

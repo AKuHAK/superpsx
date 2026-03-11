@@ -16,6 +16,7 @@
 #include "iso_image.h"
 #include "iso_fs.h"
 #include "osd.h"
+#include "mdec.h"
 
 #include <string.h>
 #include <limits.h>
@@ -202,6 +203,7 @@ void Init_SuperPSX(void)
     Init_Memory();
     Init_Interrupts();
     CDROM_Init();
+    MDEC_Init();
 
     /* If host provided PSX arguments, write them into scratchpad now. */
     if (psx_host_argc > 0 && psx_host_args)

@@ -18,6 +18,7 @@
 #endif
 #include "spu.h"
 #include "scheduler.h"
+#include "psx_dma.h"
 #undef LOG_TAG
 #include "gpu_state.h"
 #undef LOG_TAG
@@ -760,7 +761,9 @@ static inline int run_jit_chain(uint64_t deadline)
 
     /* Dynamic polling skip: if this PC was seen as a self-loop last time,
      * skip immediately instead of executing another polling iteration.
-     * Also restore the patched instruction on the block entry. */
+     * Also restore the patched instruction on the block entry.
+     * Suppressed while DMA is pending so the polling loop runs at real
+     * speed and Timer2 measurements stay accurate. */
     if (__builtin_expect(pc == poll_detect_pc, 0))
     {
         /* Restore original instructions if we patched the block */
@@ -769,6 +772,7 @@ static inline int run_jit_chain(uint64_t deadline)
             poll_patched_addr[0] = poll_patched_saved[0];
             poll_patched_addr[1] = poll_patched_saved[1];
             poll_patched_addr = NULL;
+            jit_flush_pending = 1;
         }
         poll_detect_pc = 0;
         if (deadline > global_cycles)
@@ -886,9 +890,16 @@ static inline int run_jit_chain(uint64_t deadline)
     check_stuck_detection(pc);
     handle_vram_dump(run_iterations);
 
-    /* Idle skip logic (integrated execution control) */
+    /* Idle skip logic (integrated execution control).
+     * Suppressed while a DMA is pending so the polling loop runs at
+     * real speed and Timer2 measurements stay accurate. */
     if (__builtin_expect(be && be->is_idle && cpu.pc == pc, 0))
     {
+        if (DMA_IsPending()) {
+            idle_skip_count = 0;
+        }
+        else
+        {
         if (pc != idle_skip_pc)
         {
             idle_skip_pc = pc;
@@ -919,6 +930,7 @@ static inline int run_jit_chain(uint64_t deadline)
             idle_skip_count = 0;
             return RUN_RES_BREAK;
         }
+        } /* end DMA_IsPending else */
     }
     else
     {
@@ -932,8 +944,10 @@ static inline int run_jit_chain(uint64_t deadline)
     /* Dynamic polling detection: if a chain exits to the same PC it entered,
      * the block self-looped via DBL until cycles exhausted.  Mark it and
      * patch the block's DBL entry to abort immediately on next DBL entry,
-     * so that chains reaching this block will exit back to C. */
-    if (__builtin_expect(cpu.pc == pc, 0))
+     * so that chains reaching this block will exit back to C.
+     * Suppressed while DMA is pending — the poll will complete naturally
+     * when the DMA finishes, and skipping would inflate Timer2 counts. */
+    if (__builtin_expect(cpu.pc == pc && !DMA_IsPending(), 0))
     {
         poll_detect_pc = pc;
         /* Patch the block's entry point: overwrite first body instruction

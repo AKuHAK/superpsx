@@ -58,6 +58,10 @@ static inline void dma_check_pending(void) {
   }
 }
 
+int DMA_IsPending(void) {
+  return dma_pending_channel >= 0;
+}
+
 static void CDROM_DMA3(uint32_t madr, uint32_t bcr, uint32_t chcr) {
   uint32_t block_size_words = bcr & 0xFFFF;
   uint32_t block_count = (bcr >> 16) & 0xFFFF;
@@ -165,9 +169,11 @@ void DMA_Write(uint32_t addr, uint32_t data) {
           if (!((dma_dpcr >> (ch * 4 + 3)) & 1))
             break;
 
-          /* SyncMode=0 channels (incl. DMA6) require bit28 (Start/Trigger) */
+          /* DMA6/OTC SyncMode=0 requires bit28 (manual Start/Trigger).
+           * Other channels start with bit24 alone. */
           uint32_t sync_mode = (dma_channels[ch].chcr >> 9) & 3;
-          if (sync_mode == 0 && !(dma_channels[ch].chcr & 0x10000000)) {
+          if (ch == 6 && sync_mode == 0 &&
+              !(dma_channels[ch].chcr & 0x10000000)) {
             dma_channels[ch].chcr &= ~0x01000000;
             break;
           }
@@ -187,11 +193,12 @@ void DMA_Write(uint32_t addr, uint32_t data) {
             GPU_DMA6(dma_channels[ch].madr, dma_channels[ch].bcr,
                      dma_channels[ch].chcr);
 
-          if (ch == 4 && sync_mode == 1) {
-            /* SPU DMA mode 1 (sync block): defer completion so that test
-             * code can observe bit24 still set (DMA not yet complete).
-             * Transfer time ≈ block_size * block_count *
-             * SPU_DMA_CYCLES_PER_WORD */
+          if (ch == 4) {
+            /* SPU DMA: defer completion so the transfer takes visible
+             * time.  The polling check (dma_check_pending) completes
+             * the DMA inline when EFFECTIVE_CYCLES reaches the
+             * deadline; the scheduler is a fallback for IRQ-based
+             * games that don't poll CHCR. */
             uint32_t block_size = dma_channels[ch].bcr & 0xFFFF;
             uint32_t block_count = (dma_channels[ch].bcr >> 16) & 0xFFFF;
             if (block_size == 0)
@@ -202,14 +209,14 @@ void DMA_Write(uint32_t addr, uint32_t data) {
             uint64_t delay_cycles =
                 (uint64_t)total_words * SPU_DMA_CYCLES_PER_WORD;
             if (delay_cycles < 32)
-              delay_cycles = 32; /* minimum visible delay */
+              delay_cycles = 32;
 
             dma_pending_channel = ch;
             dma_pending_deadline = DMA_EFFECTIVE_CYCLES + delay_cycles;
-            /* Schedule event as fallback for IRQ-based completion;
-             * inline check in DMA_Read handles polling-based completion. */
-            uint64_t dma_deadline = global_cycles + delay_cycles;
-            Scheduler_ScheduleEvent(SCHED_EVENT_DMA, dma_deadline,
+
+            /* Scheduler fallback for IRQ-based completion */
+            Scheduler_ScheduleEvent(SCHED_EVENT_DMA,
+                                    global_cycles + delay_cycles,
                                     DMA_FireCompletion);
           } else if (dma_stalled) {
             /* Linked-list DMA stalled (loop detected) — leave bit24 set,

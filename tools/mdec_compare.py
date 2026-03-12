@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Compare VRAM binary dump with reference PNG images.
+
+Usage:
+  python3 tools/mdec_compare.py <vram_dump.bin> <reference.png> [mode]
+
+Mode: auto (default), rgb, gray
+"""
+
+import sys
+import os
+from pathlib import Path
+
+try:
+    from PIL import Image
+    import numpy as np
+except ImportError:
+    print("pip install Pillow numpy")
+    sys.exit(1)
+
+
+def load_vram_bin(path):
+    """Load raw 1024x512x16bpp VRAM dump, return uint16 array."""
+    data = np.fromfile(path, dtype=np.uint16)
+    assert data.shape[0] == 1024 * 512, f"Expected {1024*512} pixels, got {data.shape[0]}"
+    return data.reshape(512, 1024)
+
+
+def vram16_to_rgb(vram):
+    """Convert 16-bit PSX VRAM (RGB555) to 8-bit RGB array."""
+    r = ((vram & 0x001F) << 3).astype(np.uint8)
+    g = (((vram >> 5) & 0x001F) << 3).astype(np.uint8)
+    b = (((vram >> 10) & 0x001F) << 3).astype(np.uint8)
+    return np.stack([r, g, b], axis=-1)
+
+
+def vram16_to_gray(vram):
+    """Convert 16-bit PSX VRAM to grayscale by interpreting low byte as gray.
+    
+    For 8-bit mono: each 16-bit word stores 2 packed 8-bit values.
+    For 4-bit mono: each 16-bit word stores 4 packed 4-bit values.
+    But in VRAM, they're stored as 16-bit pixels, so we interpret the full
+    1024x512 grid and extract based on what the reference expects.
+    """
+    # Return low 8 bits of each pixel as grayscale
+    return (vram & 0xFF).astype(np.uint8)
+
+
+def compare_rgb(vram_path, ref_path):
+    """Compare RGB VRAM dump with reference PNG."""
+    vram = load_vram_bin(vram_path)
+    actual = vram16_to_rgb(vram)
+    ref = np.array(Image.open(ref_path).convert("RGB"))
+    
+    assert actual.shape == ref.shape, f"Shape mismatch: {actual.shape} vs {ref.shape}"
+    
+    # Find non-black region in reference
+    nonblack_ref = np.any(ref > 0, axis=2)
+    nonblack_act = np.any(actual > 0, axis=2)
+    
+    ref_rows, ref_cols = np.where(nonblack_ref)
+    act_rows, act_cols = np.where(nonblack_act)
+    
+    if len(ref_rows) == 0:
+        print("Reference is all black!")
+        return False
+    
+    print(f"Reference non-black region: rows {ref_rows.min()}-{ref_rows.max()}, "
+          f"cols {ref_cols.min()}-{ref_cols.max()} ({len(ref_rows)} pixels)")
+    
+    if len(act_rows) > 0:
+        print(f"Actual    non-black region: rows {act_rows.min()}-{act_rows.max()}, "
+              f"cols {act_cols.min()}-{act_cols.max()} ({len(act_rows)} pixels)")
+    else:
+        print("Actual is all black! MDEC output not reaching VRAM.")
+        return False
+    
+    # Compare in the non-black reference region
+    mask = nonblack_ref
+    diff = np.abs(actual.astype(int) - ref.astype(int))
+    
+    # Stats over non-black reference pixels
+    masked_diff = diff[mask]
+    if len(masked_diff) == 0:
+        print("No non-black pixels to compare!")
+        return False
+    
+    max_diff = masked_diff.max()
+    mean_diff = masked_diff.mean()
+    pct_exact = (masked_diff == 0).mean() * 100
+    pct_within_8 = (masked_diff <= 8).mean() * 100
+    
+    print(f"\nComparison over {mask.sum()} non-black ref pixels:")
+    print(f"  Max channel diff:  {max_diff}")
+    print(f"  Mean channel diff: {mean_diff:.2f}")
+    print(f"  Exact match:       {pct_exact:.1f}%")
+    print(f"  Within ±8:         {pct_within_8:.1f}%")
+    
+    # Show first few pixel comparisons
+    r0, c0 = ref_rows.min(), ref_cols.min()
+    print(f"\nFirst pixels at ({r0},{c0}):")
+    for i in range(min(8, ref_cols.max() - c0 + 1)):
+        ar, ag, ab = actual[r0, c0+i]
+        rr, rg, rb = ref[r0, c0+i]
+        print(f"  ({r0},{c0+i}): actual=({ar:3d},{ag:3d},{ab:3d}) "
+              f"ref=({rr:3d},{rg:3d},{rb:3d}) "
+              f"diff=({abs(int(ar)-int(rr)):d},{abs(int(ag)-int(rg)):d},{abs(int(ab)-int(rb)):d})")
+    
+    # Save difference image for visual inspection
+    diff_img = np.clip(diff * 10, 0, 255).astype(np.uint8)  # amplify diffs
+    diff_path = str(Path(vram_path).parent / "vram_diff.png")
+    Image.fromarray(diff_img).save(diff_path)
+    print(f"\nDifference image saved to {diff_path}")
+    
+    # Also save actual as PNG for visual comparison
+    actual_path = str(Path(vram_path).parent / "vram_actual.png")
+    Image.fromarray(actual).save(actual_path)
+    print(f"Actual VRAM saved to {actual_path}")
+    
+    return max_diff <= 8
+
+
+def compare_gray(vram_path, ref_path):
+    """Compare grayscale VRAM dump with reference PNG."""
+    vram = load_vram_bin(vram_path)
+    ref = np.array(Image.open(ref_path).convert("L"))
+    
+    # The reference is 1024x512 grayscale (mode L).
+    # PSX VRAM is 16-bit; for mono MDEC tests, the test stores
+    # decoded bytes packed into 16-bit VRAM words.
+    # The reference PNG was captured by reading VRAM as 8-bit values
+    # (2 bytes per 16-bit pixel, so 2048 x 512 effective 8-bit resolution
+    # squeezed into 1024x512 by viewing 16-bit VRAM as grayscale).
+    
+    # For mono MDEC output, the GPU stores grayscale as RGB555 with R=G=B=gray>>3.
+    # The reference PNG was generated by reading back R channel * 8, so to compare
+    # we extract the R channel from RGB555 and scale it back to 8-bit.
+    actual_lo = ((vram & 0x1F) << 3).astype(np.uint8)
+    
+    # Find non-black pixels in reference
+    nonblack_ref = ref > 0
+    ref_rows, ref_cols = np.where(nonblack_ref)
+    
+    if len(ref_rows) == 0:
+        print("Reference is all black!")
+        return False
+    
+    print(f"Reference non-black region: rows {ref_rows.min()}-{ref_rows.max()}, "
+          f"cols {ref_cols.min()}-{ref_cols.max()} ({len(ref_rows)} pixels)")
+    
+    # Check actual
+    nonblack_act = actual_lo > 0
+    act_rows, act_cols = np.where(nonblack_act)
+    if len(act_rows) > 0:
+        print(f"Actual    non-black region: rows {act_rows.min()}-{act_rows.max()}, "
+              f"cols {act_cols.min()}-{act_cols.max()} ({len(act_rows)} pixels)")
+    else:
+        print("Actual VRAM is all black!")
+        return False
+    
+    # Compare
+    mask = nonblack_ref
+    diff = np.abs(actual_lo.astype(int) - ref.astype(int))
+    masked_diff = diff[mask]
+    
+    max_diff = masked_diff.max()
+    mean_diff = masked_diff.mean()
+    pct_exact = (masked_diff == 0).mean() * 100
+    pct_within_2 = (masked_diff <= 2).mean() * 100
+    
+    print(f"\nComparison over {mask.sum()} non-black ref pixels:")
+    print(f"  Max diff:    {max_diff}")
+    print(f"  Mean diff:   {mean_diff:.2f}")
+    print(f"  Exact match: {pct_exact:.1f}%")
+    print(f"  Within ±2:   {pct_within_2:.1f}%")
+    
+    # Save actual as PNG
+    actual_path = str(Path(vram_path).parent / "vram_actual_gray.png")
+    Image.fromarray(actual_lo).save(actual_path)
+    print(f"\nActual VRAM saved to {actual_path}")
+    
+    return max_diff <= 2
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <vram_dump.bin> <reference.png> [mode]")
+        print("Mode: auto (default), rgb, gray")
+        sys.exit(1)
+    
+    vram_path = sys.argv[1]
+    ref_path = sys.argv[2]
+    mode = sys.argv[3] if len(sys.argv) > 3 else "auto"
+    
+    if mode == "auto":
+        ref = Image.open(ref_path)
+        mode = "gray" if ref.mode == "L" else "rgb"
+        print(f"Auto-detected mode: {mode} (ref mode={ref.mode})")
+    
+    print(f"VRAM dump: {vram_path}")
+    print(f"Reference: {ref_path}")
+    print()
+    
+    if mode == "rgb":
+        ok = compare_rgb(vram_path, ref_path)
+    else:
+        ok = compare_gray(vram_path, ref_path)
+    
+    print(f"\nResult: {'PASS' if ok else 'FAIL'}")
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

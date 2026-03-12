@@ -65,6 +65,8 @@
 #define MDEC1_RESET   0x80000000
 
 /* Output sizes */
+#define SIZE_OF_4B_BLOCK   (8 * 8 / 2)     /* 32 bytes (mono 4-bit) */
+#define SIZE_OF_8B_BLOCK   (8 * 8)         /* 64 bytes (mono 8-bit) */
 #define SIZE_OF_16B_BLOCK  (16 * 16 * 2)  /* 512 bytes */
 #define SIZE_OF_24B_BLOCK  (16 * 16 * 3)  /* 768 bytes */
 
@@ -99,6 +101,7 @@ enum {
     MDEC_STATE_IDLE = 0,
     MDEC_STATE_RECV_QUANT,   /* Receiving quant table words via 0x1F801820 */
     MDEC_STATE_RECV_SCALE,   /* Receiving IDCT scale table words */
+    MDEC_STATE_RECV_DATA,    /* Receiving compressed data words (manual decode) */
 };
 
 static struct {
@@ -106,11 +109,18 @@ static struct {
     uint32_t reg1;                /* Status register */
     const uint16_t *rl;           /* Current RLE read pointer */
     const uint16_t *rl_end;       /* End of RLE data */
-    uint8_t *block_buffer_pos;    /* Partial block output position */
+    uint8_t *block_buffer_pos;    /* Partial block output position (DMA1) */
     uint8_t  block_buffer[SIZE_OF_24B_BLOCK]; /* Partial output cache */
     struct {
         uint32_t adr, bcr, chcr;
     } pending_dma1;               /* Deferred DMA1 request */
+
+    /* Output FIFO for manual (non-DMA) reads */
+    int out_pos;                  /* Read position in block_buffer (bytes) */
+    int out_end;                  /* Total bytes in current decoded block */
+
+    /* Remaining parameter words for the current command */
+    int remaining_words;
 
     /* Register-write FIFO state */
     int fifo_state;               /* MDEC_STATE_xxx */
@@ -118,10 +128,23 @@ static struct {
     uint8_t qt_buffer[128];       /* Quant table staging (Y 64B + UV 64B) */
     int qt_pos;                   /* Bytes written so far */
     int qt_has_uv;                /* Command specified UV table too */
+
+    /* Scale table staging for register-write path */
+    uint16_t scale_staging[64];   /* Accumulate 64 halfwords */
+    int scale_pos;                /* Halfwords written so far */
 } mdec;
 
 static int iq_y[DSIZE2];         /* Combined quant+scale for luminance */
 static int iq_uv[DSIZE2];        /* Combined quant+scale for chrominance */
+static int16_t scale_table[DSIZE2]; /* IDCT scale table (stored transposed) */
+
+/* Input buffer for manual (non-DMA) word-by-word writes */
+#define MDEC_IN_BUF_SIZE  8192  /* halfwords */
+static uint16_t mdec_in_buf[MDEC_IN_BUF_SIZE];
+static int mdec_in_write_idx;
+
+/* Forward declarations */
+static void mdec_decode_out_block(void);
 
 /* ---------- Quant table setup ---------- */
 
@@ -276,6 +299,55 @@ static const uint16_t *rl2blk(int *blk, const uint16_t *rl) {
     return rl;
 }
 
+/* ---------- Mono RLE → single Y block ---------- */
+
+static const uint16_t *rl2blk_mono(int *blk, const uint16_t *rl) {
+    int k, q_scale, used_col;
+
+    memset(blk, 0, DSIZE2 * sizeof(int));
+
+    uint16_t hw = *rl++;
+    q_scale = RLE_RUN(hw);
+    blk[0] = SCALER(RLE_VAL(hw) * iq_y[0], AAN_EXTRA - 3);
+    k = 0;
+    used_col = 0;
+
+    while (1) {
+        hw = *rl++;
+        if (hw == MDEC_END_OF_DATA)
+            break;
+        k += RLE_RUN(hw) + 1;
+        if (k >= DSIZE2) break;
+        int val = RLE_VAL(hw);
+        blk[zscan[k]] = SCALER(val * iq_y[k] * q_scale, AAN_EXTRA);
+        used_col |= (zscan[k] > 7) ? 1 << (zscan[k] & 7) : 0;
+    }
+    if (k == 0) used_col = -1;
+    idct(blk, used_col);
+    return rl;
+}
+
+/* ---------- Y → Mono (4-bit / 8-bit) ---------- */
+
+static void y_to_mono8(int *blk, uint8_t *image, int signed_out) {
+    for (int i = 0; i < DSIZE2; i++) {
+        int v = SCALER(blk[i], 10);
+        if (!signed_out) v += 128;
+        image[i] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+}
+
+static void y_to_mono4(int *blk, uint8_t *image, int signed_out) {
+    for (int i = 0; i < DSIZE2; i += 2) {
+        int v0 = SCALER(blk[i], 10);
+        int v1 = SCALER(blk[i + 1], 10);
+        if (!signed_out) { v0 += 128; v1 += 128; }
+        v0 = v0 < 0 ? 0 : (v0 > 255 ? 255 : v0);
+        v1 = v1 < 0 ? 0 : (v1 > 255 ? 255 : v1);
+        image[i / 2] = (uint8_t)(((v0 >> 4) & 0x0F) | (v1 & 0xF0));
+    }
+}
+
 /* ---------- YUV→RGB (15-bit / 24-bit) ---------- */
 
 /* Color coefficients (fixed-point, matching PCSX-ReARMed) */
@@ -408,11 +480,21 @@ void MDEC_Init(void) {
     memset(iq_y, 0, sizeof(iq_y));
     memset(iq_uv, 0, sizeof(iq_uv));
     mdec.fifo_state = MDEC_STATE_IDLE;
-    mdec.rl = (const uint16_t *)&psx_ram[0x100000];
 }
 
 void MDEC_WriteCommand(uint32_t data) {
     /* If we're in a FIFO-receiving state, this write is parameter data */
+    if (mdec.fifo_state == MDEC_STATE_RECV_DATA) {
+        /* Append 2 halfwords to the manual input buffer */
+        if (mdec_in_write_idx + 2 <= MDEC_IN_BUF_SIZE) {
+            mdec_in_buf[mdec_in_write_idx++] = (uint16_t)(data & 0xFFFF);
+            mdec_in_buf[mdec_in_write_idx++] = (uint16_t)(data >> 16);
+            mdec.rl_end = &mdec_in_buf[mdec_in_write_idx];
+        }
+        if (mdec.remaining_words > 0)
+            mdec.remaining_words--;
+        return;
+    }
     if (mdec.fifo_state == MDEC_STATE_RECV_QUANT) {
         /* Pack 32-bit word into qt_buffer as 4 bytes (little-endian) */
         if (mdec.qt_pos + 4 <= (int)sizeof(mdec.qt_buffer)) {
@@ -435,10 +517,19 @@ void MDEC_WriteCommand(uint32_t data) {
         return;
     }
     if (mdec.fifo_state == MDEC_STATE_RECV_SCALE) {
-        /* Scale table data — ignore (we use standard DCT) */
+        /* Accumulate scale table data */
+        if (mdec.scale_pos + 2 <= 64) {
+            mdec.scale_staging[mdec.scale_pos++] = (uint16_t)(data & 0xFFFF);
+            mdec.scale_staging[mdec.scale_pos++] = (uint16_t)(data >> 16);
+        }
         mdec.fifo_remaining--;
-        if (mdec.fifo_remaining <= 0)
+        if (mdec.fifo_remaining <= 0) {
+            /* Transpose and store scale table */
+            for (int sy = 0; sy < 8; sy++)
+                for (int sx = 0; sx < 8; sx++)
+                    scale_table[sy * 8 + sx] = (int16_t)mdec.scale_staging[sx * 8 + sy];
             mdec.fifo_state = MDEC_STATE_IDLE;
+        }
         return;
     }
 
@@ -448,6 +539,18 @@ void MDEC_WriteCommand(uint32_t data) {
     uint32_t cmd = (data >> 29) & 7;
 
     switch (cmd) {
+    case 1: /* Decode Macroblocks */
+        mdec.reg1 |= MDEC1_BUSY;
+        mdec.remaining_words = data & 0xFFFF;
+        if (mdec.remaining_words == 0) mdec.remaining_words = 0x10000;
+        mdec.out_pos = 0;
+        mdec.out_end = 0;
+        /* Set up manual input buffer for word-by-word writes */
+        mdec_in_write_idx = 0;
+        mdec.rl = mdec_in_buf;
+        mdec.rl_end = mdec_in_buf;
+        mdec.fifo_state = MDEC_STATE_RECV_DATA;
+        break;
     case 2: /* Set Quant Table — bit0: 0=Y only (16 words), 1=Y+UV (32 words) */
         mdec.fifo_state = MDEC_STATE_RECV_QUANT;
         mdec.qt_has_uv = (data & 1) ? 1 : 0;
@@ -457,6 +560,7 @@ void MDEC_WriteCommand(uint32_t data) {
     case 3: /* Set Scale Table — always 32 words (64 halfwords) */
         mdec.fifo_state = MDEC_STATE_RECV_SCALE;
         mdec.fifo_remaining = 32;
+        mdec.scale_pos = 0;
         break;
     default:
         /* Decode or other — command is stored in reg0, DMA0 handles actual data */
@@ -464,8 +568,65 @@ void MDEC_WriteCommand(uint32_t data) {
     }
 }
 
+/* Decode one macroblock into the non-DMA output FIFO */
+static void mdec_decode_out_block(void) {
+    int blk[DSIZE2 * 6];
+    int depth = (mdec.reg0 >> 27) & 3;
+    int signed_out = (mdec.reg0 >> 26) & 1;
+
+    if (!mdec.rl || mdec.rl >= mdec.rl_end) {
+        mdec.out_pos = 0;
+        mdec.out_end = 0;
+        return;
+    }
+
+    switch (depth) {
+    case 0:
+        mdec.rl = rl2blk_mono(blk, mdec.rl);
+        y_to_mono4(blk, mdec.block_buffer, signed_out);
+        mdec.out_end = SIZE_OF_4B_BLOCK;
+        break;
+    case 1:
+        mdec.rl = rl2blk_mono(blk, mdec.rl);
+        y_to_mono8(blk, mdec.block_buffer, signed_out);
+        mdec.out_end = SIZE_OF_8B_BLOCK;
+        break;
+    case 2:
+        mdec.rl = rl2blk(blk, mdec.rl);
+        yuv2rgb24(blk, mdec.block_buffer);
+        mdec.out_end = SIZE_OF_24B_BLOCK;
+        break;
+    default:
+        mdec.rl = rl2blk(blk, mdec.rl);
+        yuv2rgb15(blk, (uint16_t *)mdec.block_buffer);
+        mdec.out_end = SIZE_OF_16B_BLOCK;
+        break;
+    }
+    mdec.out_pos = 0;
+}
+
 uint32_t MDEC_ReadData(void) {
-    return mdec.reg0;
+    /* If output FIFO is empty, try to decode next macroblock (manual mode) */
+    if (mdec.out_pos >= mdec.out_end) {
+        if (mdec.fifo_state == MDEC_STATE_RECV_DATA &&
+            mdec.rl && mdec.rl < mdec.rl_end)
+            mdec_decode_out_block();
+        else
+            return 0;
+    }
+
+    if (mdec.out_pos >= mdec.out_end)
+        return 0;
+
+    uint32_t val;
+    memcpy(&val, &mdec.block_buffer[mdec.out_pos], 4);
+    mdec.out_pos += 4;
+
+    /* If all output consumed, clear busy */
+    if (mdec.out_pos >= mdec.out_end && (!mdec.rl || mdec.rl >= mdec.rl_end))
+        mdec.reg1 &= ~MDEC1_BUSY;
+
+    return val;
 }
 
 void MDEC_WriteControl(uint32_t data) {
@@ -476,12 +637,72 @@ void MDEC_WriteControl(uint32_t data) {
         mdec.rl_end = NULL;
         mdec.pending_dma1.adr = 0;
         mdec.block_buffer_pos = 0;
+        mdec.out_pos = 0;
+        mdec.out_end = 0;
+        mdec.remaining_words = 0;
         mdec.fifo_state = MDEC_STATE_IDLE;
+        mdec_in_write_idx = 0;
     }
 }
 
+/* Minimum halfwords of input before attempting a decode (simulate FIFO depth) */
+#define MDEC_FIFO_THRESHOLD  64  /* 32 words */
+
+/* Try to decode a macroblock if we have enough input and no output pending.
+ * Only for manual (non-DMA) mode — DMA path handles decode in MDEC_DMA1. */
+static void mdec_try_decode(void) {
+    if (mdec.fifo_state != MDEC_STATE_RECV_DATA)
+        return;  /* DMA mode: leave data for MDEC_DMA1 */
+    if (mdec.out_pos < mdec.out_end)
+        return;  /* output already available */
+    if (!mdec.rl || mdec.rl >= mdec.rl_end)
+        return;  /* no input data */
+    int available = (int)(mdec.rl_end - mdec.rl);
+    if (available < MDEC_FIFO_THRESHOLD && mdec.remaining_words > 0)
+        return;  /* not enough input yet, and more is coming */
+    mdec_decode_out_block();
+}
+
 uint32_t MDEC_ReadStatus(void) {
-    uint32_t v = mdec.reg1;
+    /* Try to decode if conditions are met */
+    mdec_try_decode();
+
+    uint32_t v = mdec.reg1 & ~0xFFFF;  /* preserve upper bits, rebuild lower */
+
+    int has_output = (mdec.out_pos < mdec.out_end) ||
+                     (mdec.rl && mdec.rl < mdec.rl_end);
+
+    /* Bit 31: Data-Out Fifo Empty */
+    if (has_output)
+        v &= ~0x80000000;
+    else
+        v |= 0x80000000;
+
+    /* Bit 30: Data-In Fifo Full — signal when output is pending but unread */
+    if (mdec.out_pos < mdec.out_end)
+        v |= 0x40000000;
+    else
+        v &= ~0x40000000;
+
+    /* Bits 28-27: DMA request flags */
+    if (v & MDEC1_BUSY) {
+        v |= 0x18000000;
+    } else {
+        v &= ~0x18000000;
+    }
+
+    /* Bits 26-25: depth, bit 24: signed, bit 23: bit15 — from command */
+    int depth    = (mdec.reg0 >> 27) & 3;
+    int sign_bit = (mdec.reg0 >> 26) & 1;
+    int stp_bit  = (mdec.reg0 >> 25) & 1;
+    v = (v & ~0x07800000) | (depth << 25) | (sign_bit << 24) | (stp_bit << 23);
+
+    /* Bits 15-0: remaining parameter words minus 1 */
+    if (mdec.remaining_words > 0)
+        v |= ((mdec.remaining_words - 1) & 0xFFFF);
+    else
+        v |= 0xFFFF;
+
     return v;
 }
 
@@ -510,11 +731,14 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
 
     const void *mem = &psx_ram[adr];
 
-    switch (cmd >> 28) {
-    case 0x3: { /* Decode macroblocks (15-bit or 24-bit) */
+    switch ((cmd >> 29) & 7) {
+    case 1: { /* Decode macroblocks */
         mdec.reg1 |= MDEC1_BUSY;
         mdec.rl = (const uint16_t *)mem;
         mdec.rl_end = mdec.rl + total_words * 2;
+        mdec.fifo_state = MDEC_STATE_IDLE;  /* DMA overrides manual input */
+        mdec.out_pos = 0;
+        mdec.out_end = 0;
         if (mdec.rl_end <= mdec.rl) break;
 
         /* If a DMA1 request was pending, process it now */
@@ -525,7 +749,7 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
         mdec.pending_dma1.adr = 0;
         break;
     }
-    case 0x4: { /* Upload quantization table */
+    case 2: { /* Upload quantization table */
         const uint8_t *p = (const uint8_t *)mem;
         iqtab_init(iq_y, p);
         if (total_words > 16)
@@ -534,8 +758,13 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
             iqtab_init(iq_uv, p); /* same table for UV */
         break;
     }
-    case 0x6: /* Upload IDCT scale table — ignored for now (standard table used) */
+    case 3: { /* Upload IDCT scale table — transpose and store */
+        const uint16_t *p = (const uint16_t *)mem;
+        for (int sy = 0; sy < 8; sy++)
+            for (int sx = 0; sx < 8; sx++)
+                scale_table[sy * 8 + sx] = (int16_t)p[sx * 8 + sy];
         break;
+    }
     default:
         printf("[MDEC] DMA0: unknown command %08X\n", (unsigned)cmd);
         break;
@@ -575,53 +804,64 @@ void MDEC_DMA1(uint32_t adr, uint32_t bcr, uint32_t chcr) {
 
     uint8_t *image = &psx_ram[adr];
     int blk[DSIZE2 * 6];
+    int depth = (mdec.reg0 >> 27) & 3;
+    int signed_out = (mdec.reg0 >> 26) & 1;
 
-    if (!(mdec.reg0 & MDEC0_RGB24)) {
-        /* 24-bit output */
-        if (mdec.block_buffer_pos != 0) {
-            int n = mdec.block_buffer + SIZE_OF_24B_BLOCK -
-                    mdec.block_buffer_pos;
-            if ((uint32_t)n > size) n = size;
-            memcpy(image, mdec.block_buffer_pos, n);
-            image += n;
-            size -= n;
-            mdec.block_buffer_pos = 0;
-        }
-        while (size >= SIZE_OF_24B_BLOCK && mdec.rl < mdec.rl_end) {
+    /* Select block size and decode function based on depth */
+    uint32_t block_bytes;
+    switch (depth) {
+    case 0:  block_bytes = SIZE_OF_4B_BLOCK;  break;
+    case 1:  block_bytes = SIZE_OF_8B_BLOCK;  break;
+    case 2:  block_bytes = SIZE_OF_24B_BLOCK; break;
+    default: block_bytes = SIZE_OF_16B_BLOCK; break;
+    }
+
+    /* Flush partial block from previous DMA1 */
+    if (mdec.block_buffer_pos != 0) {
+        int n = mdec.block_buffer + block_bytes - mdec.block_buffer_pos;
+        if ((uint32_t)n > size) n = size;
+        memcpy(image, mdec.block_buffer_pos, n);
+        image += n;
+        size -= n;
+        mdec.block_buffer_pos = 0;
+    }
+
+    /* Decode macroblocks */
+    while (size >= block_bytes && mdec.rl < mdec.rl_end) {
+        if (depth <= 1) {
+            mdec.rl = rl2blk_mono(blk, mdec.rl);
+            if (depth == 0)
+                y_to_mono4(blk, image, signed_out);
+            else
+                y_to_mono8(blk, image, signed_out);
+        } else if (depth == 2) {
             mdec.rl = rl2blk(blk, mdec.rl);
             yuv2rgb24(blk, image);
-            image += SIZE_OF_24B_BLOCK;
-            size -= SIZE_OF_24B_BLOCK;
-        }
-        if (size != 0 && mdec.rl < mdec.rl_end) {
-            mdec.rl = rl2blk(blk, mdec.rl);
-            yuv2rgb24(blk, mdec.block_buffer);
-            memcpy(image, mdec.block_buffer, size);
-            mdec.block_buffer_pos = mdec.block_buffer + size;
-        }
-    } else {
-        /* 15-bit output */
-        if (mdec.block_buffer_pos != 0) {
-            int n = mdec.block_buffer + SIZE_OF_16B_BLOCK -
-                    mdec.block_buffer_pos;
-            if ((uint32_t)n > size) n = size;
-            memcpy(image, mdec.block_buffer_pos, n);
-            image += n;
-            size -= n;
-            mdec.block_buffer_pos = 0;
-        }
-        while (size >= SIZE_OF_16B_BLOCK && mdec.rl < mdec.rl_end) {
+        } else {
             mdec.rl = rl2blk(blk, mdec.rl);
             yuv2rgb15(blk, (uint16_t *)image);
-            image += SIZE_OF_16B_BLOCK;
-            size -= SIZE_OF_16B_BLOCK;
         }
-        if (size != 0 && mdec.rl < mdec.rl_end) {
+        image += block_bytes;
+        size -= block_bytes;
+    }
+
+    /* Handle partial block at end of DMA */
+    if (size != 0 && mdec.rl < mdec.rl_end) {
+        if (depth <= 1) {
+            mdec.rl = rl2blk_mono(blk, mdec.rl);
+            if (depth == 0)
+                y_to_mono4(blk, mdec.block_buffer, signed_out);
+            else
+                y_to_mono8(blk, mdec.block_buffer, signed_out);
+        } else if (depth == 2) {
+            mdec.rl = rl2blk(blk, mdec.rl);
+            yuv2rgb24(blk, mdec.block_buffer);
+        } else {
             mdec.rl = rl2blk(blk, mdec.rl);
             yuv2rgb15(blk, (uint16_t *)mdec.block_buffer);
-            memcpy(image, mdec.block_buffer, size);
-            mdec.block_buffer_pos = mdec.block_buffer + size;
         }
+        memcpy(image, mdec.block_buffer, size);
+        mdec.block_buffer_pos = mdec.block_buffer + size;
     }
 
     /* Invalidate JIT pages that were written */
@@ -630,8 +870,9 @@ void MDEC_DMA1(uint32_t adr, uint32_t bcr, uint32_t chcr) {
     for (uint32_t p = start_page; p <= end_page && p < (PSX_RAM_SIZE >> 12); p++)
         jit_invalidate_page(p);
 
-    /* Mark decode complete, clear busy */
-    mdec.reg1 &= ~MDEC1_BUSY;
+    /* Clear busy only when all RLE data has been consumed */
+    if (!mdec.rl || mdec.rl >= mdec.rl_end)
+        mdec.reg1 &= ~MDEC1_BUSY;
 
     /* Timing: defer completion for realistic bus timing */
     /* For now, complete immediately — timing refinement in Phase 2 */

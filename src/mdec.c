@@ -136,6 +136,7 @@ static struct {
 
 static int iq_y[DSIZE2];         /* Combined quant+scale for luminance */
 static int iq_uv[DSIZE2];        /* Combined quant+scale for chrominance */
+static int aan_only[DSIZE2];     /* AAN prescale without quant (for q_scale=0) */
 static int16_t scale_table[DSIZE2]; /* IDCT scale table (stored transposed) */
 
 /* Input buffer for manual (non-DMA) word-by-word writes */
@@ -153,7 +154,38 @@ static void iqtab_init(int *iqtab, const uint8_t *qt) {
         iqtab[i] = qt[i] * SCALER(aanscales[zscan[i]], AAN_PRESCALE_SCALE);
 }
 
+/* AAN prescale without quant (for q_scale=0 mode, linear order) */
+static void aan_only_init(void) {
+    for (int i = 0; i < DSIZE2; i++)
+        aan_only[i] = SCALER(aanscales[i], AAN_PRESCALE_SCALE);
+}
+
 /* ---------- IDCT ---------- */
+
+/* Reference IDCT using the scale table (DuckStation-style two-pass matrix multiply).
+ * Used for q_scale=0 blocks where AAN prescaling is not applied.
+ * Scale table must be stored WITHOUT transposition (direct from MDEC(3)). */
+static void real_idct_core(int *blk) {
+    int tmp[DSIZE2];
+    /* Pass 1: column transform */
+    for (int x = 0; x < DSIZE; x++) {
+        for (int y = 0; y < DSIZE; y++) {
+            int sum = 0;
+            for (int z = 0; z < DSIZE; z++)
+                sum += blk[x + z * DSIZE] * (scale_table[y + z * DSIZE] >> 3);
+            tmp[x + y * DSIZE] = (sum + 0xFFF) >> 13;
+        }
+    }
+    /* Pass 2: row transform */
+    for (int x = 0; x < DSIZE; x++) {
+        for (int y = 0; y < DSIZE; y++) {
+            int sum = 0;
+            for (int z = 0; z < DSIZE; z++)
+                sum += tmp[z + y * DSIZE] * (scale_table[x + z * DSIZE] >> 3);
+            blk[x + y * DSIZE] = (sum + 0xFFF) >> 13;
+        }
+    }
+}
 
 static void idct(int *blk, int used_col) {
     int tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7;
@@ -268,32 +300,52 @@ static const uint16_t *rl2blk(int *blk, const uint16_t *rl) {
         /* Blocks: Cr, Cb, Y1, Y2, Y3, Y4 */
         if (i == 2) iqtab = iq_y;
 
+        /* Skip FE00 padding between blocks */
+        while (*rl == MDEC_END_OF_DATA) rl++;
+
         uint16_t hw = *rl++;
         q_scale = RLE_RUN(hw);
-
-        /* DC coefficient */
-        blk[0] = SCALER(RLE_VAL(hw) * iqtab[0], AAN_EXTRA - 3);
         k = 0;
         used_col = 0;
 
-        /* AC coefficients */
-        while (1) {
-            hw = *rl++;
-            if (hw == MDEC_END_OF_DATA)
-                break;
-
-            k += RLE_RUN(hw) + 1;
-            if (k >= DSIZE2) break;
-
-            int val = RLE_VAL(hw);
-            blk[zscan[k]] = SCALER(val * iqtab[k] * q_scale, AAN_EXTRA);
-            used_col |= (zscan[k] > 7) ? 1 << (zscan[k] & 7) : 0;
+        if (q_scale == 0) {
+            /* Special mode: val*2, linear order, no quant table.
+             * Use real_idct_core for accuracy. */
+            int val = RLE_VAL(hw) * 2;
+            if (val < -0x400) val = -0x400; else if (val > 0x3FF) val = 0x3FF;
+            blk[0] = val;
+            while (k < 63) {
+                hw = *rl++;
+                k += RLE_RUN(hw) + 1;
+                if (k < DSIZE2) {
+                    val = RLE_VAL(hw) * 2;
+                    if (val < -0x400) val = -0x400; else if (val > 0x3FF) val = 0x3FF;
+                    blk[k] = val;
+                }
+            }
+            real_idct_core(blk);
+            /* Scale up to match AAN output range (yuv functions expect >>10) */
+            for (int j = 0; j < DSIZE2; j++)
+                blk[j] <<= 10;
+        } else {
+            /* Normal mode: val*qt*q_scale, zigzag order */
+            blk[0] = SCALER(RLE_VAL(hw) * iqtab[0], AAN_EXTRA - 3);
+            while (k < 63) {
+                hw = *rl++;
+                k += RLE_RUN(hw) + 1;
+                if (k < DSIZE2) {
+                    int val = RLE_VAL(hw);
+                    blk[zscan[k]] = SCALER(val * iqtab[k] * q_scale, AAN_EXTRA);
+                    used_col |= (zscan[k] > 7) ? 1 << (zscan[k] & 7) : 0;
+                }
+            }
         }
 
-        if (k == 0) used_col = -1;
-
-        /* IDCT this block */
-        idct(blk, used_col);
+        if (q_scale > 0) {
+            if (k == 0) used_col = -1;
+            /* IDCT this block (AAN fast path) */
+            idct(blk, used_col);
+        }
         blk += DSIZE2;
     }
     return rl;
@@ -306,24 +358,49 @@ static const uint16_t *rl2blk_mono(int *blk, const uint16_t *rl) {
 
     memset(blk, 0, DSIZE2 * sizeof(int));
 
+    /* Skip FE00 padding */
+    while (*rl == MDEC_END_OF_DATA) rl++;
+
     uint16_t hw = *rl++;
     q_scale = RLE_RUN(hw);
-    blk[0] = SCALER(RLE_VAL(hw) * iq_y[0], AAN_EXTRA - 3);
     k = 0;
     used_col = 0;
 
-    while (1) {
-        hw = *rl++;
-        if (hw == MDEC_END_OF_DATA)
-            break;
-        k += RLE_RUN(hw) + 1;
-        if (k >= DSIZE2) break;
-        int val = RLE_VAL(hw);
-        blk[zscan[k]] = SCALER(val * iq_y[k] * q_scale, AAN_EXTRA);
-        used_col |= (zscan[k] > 7) ? 1 << (zscan[k] & 7) : 0;
+    if (q_scale == 0) {
+        /* Special mode: val*2, linear order, no quant table.
+         * Use real_idct_core (scale-table IDCT) for accuracy. */
+        int val = RLE_VAL(hw) * 2;
+        if (val < -0x400) val = -0x400; else if (val > 0x3FF) val = 0x3FF;
+        blk[0] = val;
+        while (k < 63) {
+            hw = *rl++;
+            k += RLE_RUN(hw) + 1;
+            if (k < DSIZE2) {
+                val = RLE_VAL(hw) * 2;
+                if (val < -0x400) val = -0x400; else if (val > 0x3FF) val = 0x3FF;
+                blk[k] = val;
+            }
+        }
+        real_idct_core(blk);
+        /* Scale up to match AAN output range (y_to_mono expects >>10) */
+        for (int i = 0; i < DSIZE2; i++)
+            blk[i] <<= 10;
+    } else {
+        blk[0] = SCALER(RLE_VAL(hw) * iq_y[0], AAN_EXTRA - 3);
+        while (k < 63) {
+            hw = *rl++;
+            k += RLE_RUN(hw) + 1;
+            if (k < DSIZE2) {
+                int val = RLE_VAL(hw);
+                blk[zscan[k]] = SCALER(val * iq_y[k] * q_scale, AAN_EXTRA);
+                used_col |= (zscan[k] > 7) ? 1 << (zscan[k] & 7) : 0;
+            }
+        }
     }
-    if (k == 0) used_col = -1;
-    idct(blk, used_col);
+    if (q_scale > 0) {
+        if (k == 0) used_col = -1;
+        idct(blk, used_col);
+    }
     return rl;
 }
 
@@ -479,6 +556,7 @@ void MDEC_Init(void) {
     memset(&mdec, 0, sizeof(mdec));
     memset(iq_y, 0, sizeof(iq_y));
     memset(iq_uv, 0, sizeof(iq_uv));
+    aan_only_init();
     mdec.fifo_state = MDEC_STATE_IDLE;
 }
 
@@ -491,8 +569,11 @@ void MDEC_WriteCommand(uint32_t data) {
             mdec_in_buf[mdec_in_write_idx++] = (uint16_t)(data >> 16);
             mdec.rl_end = &mdec_in_buf[mdec_in_write_idx];
         }
-        if (mdec.remaining_words > 0)
+        if (mdec.remaining_words > 0) {
             mdec.remaining_words--;
+            if (mdec.remaining_words == 0)
+                mdec.fifo_state = MDEC_STATE_IDLE;
+        }
         return;
     }
     if (mdec.fifo_state == MDEC_STATE_RECV_QUANT) {
@@ -524,10 +605,9 @@ void MDEC_WriteCommand(uint32_t data) {
         }
         mdec.fifo_remaining--;
         if (mdec.fifo_remaining <= 0) {
-            /* Transpose and store scale table */
-            for (int sy = 0; sy < 8; sy++)
-                for (int sx = 0; sx < 8; sx++)
-                    scale_table[sy * 8 + sx] = (int16_t)mdec.scale_staging[sx * 8 + sy];
+            /* Store scale table directly (no transposition — matches DuckStation) */
+            for (int i = 0; i < DSIZE2; i++)
+                scale_table[i] = (int16_t)mdec.scale_staging[i];
             mdec.fifo_state = MDEC_STATE_IDLE;
         }
         return;
@@ -568,6 +648,32 @@ void MDEC_WriteCommand(uint32_t data) {
     }
 }
 
+/* Convert 16x16 raster-order pixels to MDEC block order (Y1,Y2,Y3,Y4).
+ * Real PSX MDEC outputs via register reads in block order:
+ *   Y1 (top-left 8x8), Y2 (top-right 8x8), Y3 (bot-left), Y4 (bot-right)
+ * DMA1 rearranges automatically to raster order. */
+static void raster_to_block_15(uint16_t *buf) {
+    uint16_t tmp[256];
+    memcpy(tmp, buf, 512);
+    uint16_t *dst = buf;
+    /* Y1: rows 0-7, cols 0-7 */
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            *dst++ = tmp[y * 16 + x];
+    /* Y2: rows 0-7, cols 8-15 */
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            *dst++ = tmp[y * 16 + 8 + x];
+    /* Y3: rows 8-15, cols 0-7 */
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            *dst++ = tmp[(y + 8) * 16 + x];
+    /* Y4: rows 8-15, cols 8-15 */
+    for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++)
+            *dst++ = tmp[(y + 8) * 16 + 8 + x];
+}
+
 /* Decode one macroblock into the non-DMA output FIFO */
 static void mdec_decode_out_block(void) {
     int blk[DSIZE2 * 6];
@@ -599,6 +705,8 @@ static void mdec_decode_out_block(void) {
     default:
         mdec.rl = rl2blk(blk, mdec.rl);
         yuv2rgb15(blk, (uint16_t *)mdec.block_buffer);
+        /* Register reads output block order (Y1,Y2,Y3,Y4) like real hardware */
+        raster_to_block_15((uint16_t *)mdec.block_buffer);
         mdec.out_end = SIZE_OF_16B_BLOCK;
         break;
     }
@@ -608,8 +716,7 @@ static void mdec_decode_out_block(void) {
 uint32_t MDEC_ReadData(void) {
     /* If output FIFO is empty, try to decode next macroblock (manual mode) */
     if (mdec.out_pos >= mdec.out_end) {
-        if (mdec.fifo_state == MDEC_STATE_RECV_DATA &&
-            mdec.rl && mdec.rl < mdec.rl_end)
+        if (mdec.rl && mdec.rl < mdec.rl_end)
             mdec_decode_out_block();
         else
             return 0;
@@ -721,6 +828,10 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
         return;
     }
 
+#ifdef ENABLE_VRAM_DUMP
+    printf("[MDEC] DMA0: adr=%08X words=%u cmd=%08X\n", (unsigned)adr, (unsigned)total_words, (unsigned)cmd);
+#endif
+
     mdec.reg1 |= MDEC1_STP;
 
     adr &= 0x1FFFFC;
@@ -740,6 +851,24 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
         mdec.out_pos = 0;
         mdec.out_end = 0;
         if (mdec.rl_end <= mdec.rl) break;
+
+#ifdef ENABLE_VRAM_DUMP
+        {
+            static int rle_dump_done = 0;
+            if (!rle_dump_done) {
+                rle_dump_done = 1;
+                /* Dump first 128 halfwords of RLE data */
+                const uint16_t *p = mdec.rl;
+                printf("[MDEC] RLE raw data (first 128 hw):\n");
+                for (int j = 0; j < 128 && p + j < mdec.rl_end; j++) {
+                    if (j % 16 == 0) printf("  [%3d]", j);
+                    printf(" %04X", (unsigned)p[j]);
+                    if (j % 16 == 15) printf("\n");
+                }
+                printf("\n");
+            }
+        }
+#endif
 
         /* If a DMA1 request was pending, process it now */
         if (mdec.pending_dma1.adr) {
@@ -785,6 +914,12 @@ void MDEC_DMA1(uint32_t adr, uint32_t bcr, uint32_t chcr) {
         printf("[MDEC] DMA1: unexpected chcr %08X\n", (unsigned)chcr);
         return;
     }
+
+#ifdef ENABLE_VRAM_DUMP
+    printf("[MDEC] DMA1: adr=%08X words=%u depth=%d rl=%p rl_end=%p\n",
+           (unsigned)adr, (unsigned)total_words, (mdec.reg0 >> 27) & 3,
+           (void*)mdec.rl, (void*)mdec.rl_end);
+#endif
 
     /* If MDEC not busy (no data to decode), defer */
     if (!(mdec.reg1 & MDEC1_BUSY) || !mdec.rl || mdec.rl >= mdec.rl_end) {

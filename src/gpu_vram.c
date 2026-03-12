@@ -449,3 +449,26 @@ void DumpVRAM(const char *filename)
 
     free(buf);
 }
+
+/* Dump psx_vram_shadow (CPU-side copy) directly — no GS readback involved */
+void DumpShadowVRAM(const char *filename)
+{
+    if (!psx_vram_shadow) return;
+    int size_bytes = 1024 * 512 * 2;
+    int fd = open(filename, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) {
+        ssize_t remaining = size_bytes;
+        uint8_t *ptr = (uint8_t *)psx_vram_shadow;
+        while (remaining > 0) {
+            ssize_t w = write(fd, ptr, remaining);
+            if (w <= 0) break;
+            remaining -= w;
+            ptr += w;
+        }
+        close(fd);
+        printf("DumpShadowVRAM: Saved %d bytes to %s\n", size_bytes, filename);
+    } else {
+        printf("DumpShadowVRAM: Failed to open %s\n", filename);
+    }
+    fflush(stdout);
+}

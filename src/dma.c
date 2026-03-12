@@ -163,7 +163,18 @@ void DMA_Write(uint32_t addr, uint32_t data) {
         else
           dma_channels[ch].chcr = data;
 
+#ifdef ENABLE_VRAM_DUMP
+        if (ch == 1) printf("[DMA] ch1 CHCR ANY write: data=%08X madr=%08X bcr=%08X dpcr=%08X\n",
+                            (unsigned)data, (unsigned)dma_channels[ch].madr,
+                            (unsigned)dma_channels[ch].bcr, (unsigned)dma_dpcr);
+#endif
+
         if (data & 0x01000000) {
+#ifdef ENABLE_VRAM_DUMP
+          if (ch == 1) printf("[DMA] ch1 CHCR write: data=%08X madr=%08X bcr=%08X dpcr=%08X\n",
+                              (unsigned)data, (unsigned)dma_channels[ch].madr,
+                              (unsigned)dma_channels[ch].bcr, (unsigned)dma_dpcr);
+#endif
           /* Check DPCR master enable for this channel.
            * If master is disabled, leave bit24 SET (DMA stuck/pending) —
            * hardware never clears it when the channel can't run. */

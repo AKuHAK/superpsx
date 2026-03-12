@@ -169,6 +169,16 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
         }
         if (phys >= 0x1F801080)
         {
+#ifdef ENABLE_VRAM_DUMP
+            if (phys >= 0x1F801090 && phys <= 0x1F80109F) {
+                static int ch1_log = 0;
+                if (ch1_log < 30) {
+                    printf("[HW] DMA ch1 write: phys=%08X data=%08X size=%d\n",
+                           (unsigned)phys, (unsigned)data, size);
+                    ch1_log++;
+                }
+            }
+#endif
             DMA_Write(phys, data);
             return;
         }

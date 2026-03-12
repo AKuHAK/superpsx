@@ -1037,6 +1037,12 @@ void GPU_WriteGP1(uint32_t data)
         // Clear GS VRAM to black (PSX GPU reset clears VRAM)
         {
             Flush_GIF();
+            /* Reset GS FBA (Frame Buffer Alpha) and TEST to match cleared mask bits */
+            Push_GIF_Tag(GIF_TAG_LO(2, 1, 0, 0, 0, 1), GIF_REG_AD);
+            Push_GIF_Data(GS_SET_FBA(0), GS_REG_FBA_1);
+            Push_GIF_Data(Get_Base_TEST(), GS_REG_TEST_1);
+            Flush_GIF();
+
             Push_GIF_Tag(GIF_TAG_LO(5, 1, 0, 0, 0, 1), GIF_REG_AD);
             // Temporarily set full VRAM scissor
             Push_GIF_Data(GS_SET_SCISSOR(0, PSX_VRAM_WIDTH - 1, 0, PSX_VRAM_HEIGHT - 1), GS_REG_SCISSOR_1);

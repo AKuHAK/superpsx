@@ -135,7 +135,7 @@ static uint32_t *poll_patched_addr = NULL; /* Location of patched instructions *
 static uint32_t poll_patched_saved[2];     /* Original 2 instructions at that location */
 
 #ifdef ENABLE_VRAM_DUMP
-static uint32_t next_vram_dump = 1000000;
+static uint32_t next_vram_dump = 3500;
 #endif
 
 #ifdef ENABLE_STUCK_DETECTION
@@ -556,13 +556,20 @@ static inline void check_stuck_detection(uint32_t pc)
 static inline void handle_vram_dump(uint32_t iterations)
 {
 #ifdef ENABLE_VRAM_DUMP
+    if ((iterations & 0xFFF) == 0) {
+        printf("[VRAM_DUMP] iterations=%u next=%u\n", iterations, next_vram_dump);
+        fflush(stdout);
+    }
     if (iterations >= next_vram_dump)
     {
         char filename[64];
-        sprintf(filename, "vram_%u.bin", (unsigned)iterations);
+        sprintf(filename, "host:vram_%u.bin", (unsigned)iterations);
         extern void DumpVRAM(const char *);
         DumpVRAM(filename);
-        next_vram_dump += 1000000;
+        sprintf(filename, "host:shadow_%u.bin", (unsigned)iterations);
+        extern void DumpShadowVRAM(const char *);
+        DumpShadowVRAM(filename);
+        next_vram_dump += 1000;
     }
 #endif
 }

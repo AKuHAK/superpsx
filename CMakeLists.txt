@@ -30,6 +30,7 @@ option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
 option(ENABLE_PSX_TLB "Enable TLB fast-path for PSX RAM (experimental)" OFF)
 option(ENABLE_TEX_DEBUG "Enable texture debug overlay (colored bounding boxes)" OFF)
 option(ENABLE_VU0_MICRO "Use VU0 micro mode for GTE acceleration" ON)
+option(ENABLE_MDEC_IPU "Use PS2 IPU hardware for MDEC IDCT+YUV→RGB" OFF)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # ============================================================================
@@ -58,6 +59,7 @@ set(SUPERPSX_SOURCES
     src/hardware.c
     src/dma.c
     src/mdec.c
+    src/mdec_ipu.c
     src/sio.c
     src/timers.c
     ${GPU_SOURCES}
@@ -163,6 +165,10 @@ if(ENABLE_VU0_MICRO)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_VU0_MICRO)
     add_dependencies(${PROJECT_NAME}.elf vu0_programs)
     target_link_libraries(${PROJECT_NAME}.elf PRIVATE ${VU0_OBJECTS})
+endif()
+
+if(ENABLE_MDEC_IPU)
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE ENABLE_MDEC_IPU)
 endif()
 
 if(HEADLESS)

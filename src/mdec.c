@@ -139,6 +139,12 @@ static int iq_uv[DSIZE2];        /* Combined quant+scale for chrominance */
 static int aan_only[DSIZE2];     /* AAN prescale without quant (for q_scale=0) */
 static int16_t scale_table[DSIZE2]; /* IDCT scale table (stored transposed) */
 
+#ifdef ENABLE_MDEC_IPU
+/* Raw quant tables for IPU path */
+static uint8_t raw_qt_y[DSIZE2];
+static uint8_t raw_qt_uv[DSIZE2];
+#endif
+
 /* Input buffer for manual (non-DMA) word-by-word writes */
 #define MDEC_IN_BUF_SIZE  8192  /* halfwords */
 static uint16_t mdec_in_buf[MDEC_IN_BUF_SIZE];
@@ -558,6 +564,9 @@ void MDEC_Init(void) {
     memset(iq_uv, 0, sizeof(iq_uv));
     aan_only_init();
     mdec.fifo_state = MDEC_STATE_IDLE;
+#ifdef ENABLE_MDEC_IPU
+    MDEC_IPU_Init();
+#endif
 }
 
 void MDEC_WriteCommand(uint32_t data) {
@@ -593,6 +602,11 @@ void MDEC_WriteCommand(uint32_t data) {
                 iqtab_init(iq_uv, mdec.qt_buffer + 64);
             else
                 iqtab_init(iq_uv, mdec.qt_buffer); /* same table for UV */
+#ifdef ENABLE_MDEC_IPU
+            memcpy(raw_qt_y, mdec.qt_buffer, 64);
+            memcpy(raw_qt_uv, mdec.qt_has_uv ? mdec.qt_buffer + 64 : mdec.qt_buffer, 64);
+            MDEC_IPU_LoadQuantTable(raw_qt_y, raw_qt_uv);
+#endif
             mdec.fifo_state = MDEC_STATE_IDLE;
         }
         return;
@@ -885,6 +899,11 @@ void MDEC_DMA0(uint32_t adr, uint32_t bcr, uint32_t chcr) {
             iqtab_init(iq_uv, p + 64);
         else
             iqtab_init(iq_uv, p); /* same table for UV */
+#ifdef ENABLE_MDEC_IPU
+        memcpy(raw_qt_y, p, 64);
+        memcpy(raw_qt_uv, (total_words > 16) ? p + 64 : p, 64);
+        MDEC_IPU_LoadQuantTable(raw_qt_y, raw_qt_uv);
+#endif
         break;
     }
     case 3: { /* Upload IDCT scale table — transpose and store */
@@ -962,6 +981,21 @@ void MDEC_DMA1(uint32_t adr, uint32_t bcr, uint32_t chcr) {
     }
 
     /* Decode macroblocks */
+#ifdef ENABLE_MDEC_IPU
+    /* Try IPU hardware path for colored modes (15-bit, 24-bit) */
+    if (depth >= 2) {
+        int stp_bit = (mdec.reg0 & MDEC0_STP) ? 1 : 0;
+        int ret = MDEC_IPU_DecodeDMA1(&mdec.rl, mdec.rl_end,
+                                       image, size,
+                                       depth, signed_out, stp_bit);
+        if (ret >= 0) {
+            image += ret;
+            size  -= ret;
+            goto dma1_partial; /* handle any remaining partial block via software */
+        }
+        /* ret < 0: IPU unavailable, fall through to software path */
+    }
+#endif
     while (size >= block_bytes && mdec.rl < mdec.rl_end) {
         if (depth <= 1) {
             mdec.rl = rl2blk_mono(blk, mdec.rl);
@@ -981,6 +1015,9 @@ void MDEC_DMA1(uint32_t adr, uint32_t bcr, uint32_t chcr) {
     }
 
     /* Handle partial block at end of DMA */
+#ifdef ENABLE_MDEC_IPU
+dma1_partial:
+#endif
     if (size != 0 && mdec.rl < mdec.rl_end) {
         if (depth <= 1) {
             mdec.rl = rl2blk_mono(blk, mdec.rl);

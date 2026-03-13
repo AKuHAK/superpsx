@@ -180,7 +180,11 @@ static void test_expansion_muldiv(void)
     check_expansion("MULTU", ee, 151, &pg_ctx);
 
     ee = compile_and_measure(&(uint32_t){PSX_DIV(R_T1, R_T2)}, 1, REPEAT, NULL);
+#ifdef PLATFORM_PSP
+    check_expansion("DIV", ee, 231, &pg_ctx); /* +2 words: overflow fixup (ADDIU+MOVZ) */
+#else
     check_expansion("DIV", ee, 199, &pg_ctx);
+#endif
 
     ee = compile_and_measure(&(uint32_t){PSX_DIVU(R_T1, R_T2)}, 1, REPEAT, NULL);
     check_expansion("DIVU", ee, 167, &pg_ctx);

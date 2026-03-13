@@ -45,9 +45,6 @@ static void setup_callbacks(void) {
 }
 
 int main(int argc, char *argv[]) {
-    /* Redirect stdout/stderr for PPSSPP console capture */
-    freopen("superpsx.log", "w", stdout);
-    freopen("superpsx.log", "w", stderr);
     printf("MAIN: SuperPSX PSP started\n");
 
     setup_callbacks();

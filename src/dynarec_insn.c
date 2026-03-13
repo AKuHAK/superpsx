@@ -1032,6 +1032,12 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             EMIT_MOVZ(REG_T8, REG_AT, s2);        /* if s2==0: T8 = divz lo */
             EMIT_SW(REG_T8, CPU_LO, REG_S0);
             emit(MK_R(0, 0, 0, REG_T8, 0, 0x10)); /* mfhi T8 = remainder */
+#ifdef PLATFORM_PSP
+            /* PSP/PPSSPP overflow fixup: INT_MIN / -1 gives hi=-1 instead
+             * of hi=0.  Any x / -1 has remainder 0, so force it. */
+            EMIT_ADDIU(REG_AT, s2, 1);            /* AT = rt+1 (0 if rt==-1) */
+            EMIT_MOVZ(REG_T8, REG_ZERO, REG_AT);  /* if rt==-1: T8 = 0 */
+#endif
             /* divz hi = rs: reload if s1 was clobbered by mflo */
             if (s1 == REG_T8)
             {

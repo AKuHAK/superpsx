@@ -12,6 +12,7 @@
 #include <pspgu.h>
 #include <pspdisplay.h>
 #include <pspge.h>
+#include <psputils.h>
 #include <malloc.h>
 #include <string.h>
 #include <stdio.h>
@@ -111,6 +112,14 @@ static void *current_fbp = (void *)PSP_FB0_OFFSET;
 /* ── GPU Backend Implementation ─────────────────────────────────── */
 
 void GPU_Backend_Init(void) {
+    /* Allocate PSX VRAM shadow (1024×512 × 16bpp = 1MB).
+     * 64-byte aligned for DCache writeback + GE texture reads. */
+    if (!psx_vram_shadow) {
+        psx_vram_shadow = (uint16_t *)memalign(64, 1024 * 512 * sizeof(uint16_t));
+        if (psx_vram_shadow)
+            memset(psx_vram_shadow, 0, 1024 * 512 * sizeof(uint16_t));
+    }
+
     sceGuInit();
     sceGuStart(GU_DIRECT, display_list);
 
@@ -125,7 +134,7 @@ void GPU_Backend_Init(void) {
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_CULL_FACE);
     sceGuDisable(GU_DEPTH_TEST);
-    sceGuEnable(GU_TEXTURE_2D);
+    sceGuDisable(GU_TEXTURE_2D);
     sceGuEnable(GU_BLEND);
     sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 
@@ -134,17 +143,25 @@ void GPU_Backend_Init(void) {
     sceDisplayWaitVblankStart();
     sceGuDisplay(GU_TRUE);
 
+    /* Start the first display list so GP0 commands arriving before
+     * the first VBlank have an active list to draw into. */
+    sceGuStart(GU_DIRECT, display_list);
+    sceGuClearColor(0xFF000000); /* black */
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+
     current_fbp = (void *)PSP_FB0_OFFSET;
 }
 
 void GPU_Backend_Flush(void) {
     sceGuFinish();
     sceGuSync(0, 0);
+    sceGuStart(GU_DIRECT, display_list); /* re-open list for further draws */
 }
 
 void GPU_Backend_FlushSync(void) {
     sceGuFinish();
     sceGuSync(0, 0);
+    sceGuStart(GU_DIRECT, display_list); /* re-open list for further draws */
 }
 
 void GPU_Backend_SetupEnvironment(void) {
@@ -152,23 +169,23 @@ void GPU_Backend_SetupEnvironment(void) {
 }
 
 void GPU_Backend_UpdateDisplay(void) {
-    sceGuClearColor(0xFF000000);
-    sceGuClear(GU_COLOR_BUFFER_BIT);
-
-    if (osd_vblank_count > 0) {
-        osd_draw();
-    }
-
+    /* All GP0 drawing commands already issued sceGu draw calls via
+     * Translate_GP0_to_GS.  Just finish/sync/swap the display list. */
     sceGuFinish();
     sceGuSync(0, 0);
-    current_fbp = (current_fbp == (void *)PSP_FB0_OFFSET)
-                      ? (void *)PSP_FB1_OFFSET
-                      : (void *)PSP_FB0_OFFSET;
     sceGuSwapBuffers();
+
+    /* Clear back buffer for next frame */
     sceGuStart(GU_DIRECT, display_list);
+    sceGuClearColor(0xFF000000); /* black */
+    sceGuClear(GU_COLOR_BUFFER_BIT);
+
+    /* Reset per-frame draw stats */
+    memset(&gpu_frame_stats, 0, sizeof(gpu_frame_stats));
 }
 
 void GPU_Backend_VBlank(void) {
+    gpu_stat ^= 0x80000000;   /* Toggle GPUSTAT bit 31 (LCF) — BIOS polls this for VSync */
     GPU_Backend_UpdateDisplay();
     osd_vblank_count++;
 }
@@ -236,7 +253,56 @@ void GPU_Backend_VRAMWrite(uint32_t word) {
     vram_tx_pixel++;
 }
 
-void GPU_Backend_VRAMFlush(void) { /* No batching on PSP yet */ }
+void GPU_Backend_VRAMFlush(void) {
+    /* After A0 VRAM transfer completes, upload the written region
+     * to the sceGu framebuffer as a textured sprite so it becomes
+     * visible.  The data is already in psx_vram_shadow. */
+    if (!psx_vram_shadow || vram_tx_w <= 0 || vram_tx_h <= 0) return;
+
+    /* Flush dcache so GE can read the shadow VRAM data */
+    int tx = vram_tx_x, ty = vram_tx_y;
+    int tw = vram_tx_w, th = vram_tx_h;
+    sceKernelDcacheWritebackRange(
+        &psx_vram_shadow[ty * 1024 + tx],
+        (uint32_t)(tw * 2 + (th - 1) * 1024 * 2));
+
+    /* sceGu texture: stride=1024 (shadow VRAM width), PSM_5551, uncached ptr.
+     * Texture dimensions must be power-of-2 for sceGuTexImage.
+     * Use 512×512 which covers the max PSX VRAM area. */
+    sceGuEnable(GU_TEXTURE_2D);
+    sceGuDisable(GU_BLEND);
+    sceGuTexMode(GU_PSM_5551, 0, 0, 0);
+    sceGuTexImage(0, 512, 512, 1024,
+                  (void *)((uintptr_t)psx_vram_shadow | 0x40000000));
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexScale(1.0f, 1.0f);
+    sceGuTexOffset(0.0f, 0.0f);
+
+    /* Draw sprite mapping VRAM region to corresponding screen position.
+     * VRAM coordinates are absolute (not draw-offset relative), so
+     * map them relative to the display window. */
+    typedef struct { float u, v; uint32_t color; int16_t x, y, z; } TVert;
+    TVert *v = (TVert *)sceGuGetMemory(2 * sizeof(TVert));
+    int16_t sx0 = (int16_t)((int32_t)(tx - display_start_x) * PSP_SCREEN_W / psx_active_width);
+    int16_t sy0 = (int16_t)((int32_t)(ty - display_start_y) * PSP_SCREEN_H / psx_active_height);
+    int16_t sx1 = (int16_t)((int32_t)(tx + tw - display_start_x) * PSP_SCREEN_W / psx_active_width);
+    int16_t sy1 = (int16_t)((int32_t)(ty + th - display_start_y) * PSP_SCREEN_H / psx_active_height);
+
+    v[0].u = (float)tx;       v[0].v = (float)ty;
+    v[0].color = 0xFFFFFFFF;
+    v[0].x = sx0; v[0].y = sy0; v[0].z = 0;
+    v[1].u = (float)(tx + tw); v[1].v = (float)(ty + th);
+    v[1].color = 0xFFFFFFFF;
+    v[1].x = sx1; v[1].y = sy1; v[1].z = 0;
+
+    sceGuDrawArray(GU_SPRITES,
+        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+        2, 0, v);
+
+    sceGuDisable(GU_TEXTURE_2D);
+    sceGuEnable(GU_BLEND);
+}
 
 void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
     (void)x; (void)y; (void)w; (void)h;
@@ -256,9 +322,22 @@ void GPU_Backend_SetDisplayFB(int x, int y) {
     display_start_y = y;
 }
 
-void GPU_Backend_SetResolution(int w, int h) {
-    if (w > 0) psx_active_width = w;
-    if (h > 0) psx_active_height = h;
+void GPU_Backend_SetResolution(int interlace, int mode) {
+    /* Decode PSX display resolution from gpu_stat (set by GP1(08h)).
+     * Parameters match PS2's SetGsCrt(interlace, mode, 0):
+     *   interlace: 0=progressive, 1=interlaced
+     *   mode: 2=NTSC, 3=PAL */
+    static const int hres_table[] = {256, 320, 512, 640};
+    uint32_t hres1 = (gpu_stat >> 17) & 3;
+    uint32_t hres2 = (gpu_stat >> 16) & 1;
+    uint32_t vres  = (gpu_stat >> 19) & 1;
+
+    psx_active_width = hres2 ? 368 : hres_table[hres1];
+    if (mode == 3) /* PAL */
+        psx_active_height = vres ? 512 : 256;
+    else /* NTSC */
+        psx_active_height = vres ? 480 : 240;
+    (void)interlace;
 }
 
 void GPU_Backend_SetMaskBit(int set, int check) {
@@ -311,7 +390,33 @@ uint32_t GPU_Read(void) {
 }
 
 uint32_t GPU_ReadStatus(void) {
-    return gpu_stat | 0x14002000;
+    /* Fast-forward cycles when GPU is "busy" — needed for DrawSync loops
+     * that poll GPUSTAT in tight loops without advancing time. */
+    extern uint64_t global_cycles;
+    extern uint64_t scheduler_cached_earliest;
+    extern void Scheduler_DispatchEvents(uint64_t now);
+
+    if (global_cycles < gpu_busy_until) {
+        global_cycles = gpu_busy_until;
+        gpu_busy_until = 0;
+        while (global_cycles >= scheduler_cached_earliest)
+            Scheduler_DispatchEvents(global_cycles);
+    }
+
+    uint32_t final_stat = gpu_stat | 0x14002000;
+
+    /* Bit 25: DMA data request — depends on GP1(04h) direction.
+     * Dir=0→0, Dir=1→1 (FIFO ready), Dir=2→same as bit28, Dir=3→same as bit27.
+     * BIOS gpu_send_dma polls this before starting GPU DMA. */
+    uint32_t dma_dir = (final_stat >> 29) & 3;
+    if (dma_dir == 1)
+        final_stat |= 0x02000000;
+    else if (dma_dir == 2)
+        final_stat |= 0x02000000;
+    else if (dma_dir == 3 && (final_stat & 0x08000000))
+        final_stat |= 0x02000000;
+
+    return final_stat;
 }
 
 int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr) {
@@ -339,6 +444,7 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr) {
     } else if (sync_mode == 2) { /* Linked List */
         uint32_t max_packets = 20000;
         uint32_t packets = 0;
+
         while (packets < max_packets) {
             uint32_t header = *(uint32_t *)&psx_ram[addr];
             uint32_t count = header >> 24;

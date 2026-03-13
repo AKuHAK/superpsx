@@ -39,7 +39,9 @@ int Audio_Backend_Configure(int sample_rate, int bits, int channels, int volume)
 
 void Audio_Backend_Play(const int16_t *buffer, int size_bytes) {
     if (audio_channel < 0 || !buffer || size_bytes <= 0) return;
-    sceAudioOutputBlocking(audio_channel, audio_volume, (void *)buffer);
+    /* Non-blocking: submit audio and continue immediately.
+     * If ring buffer is full, samples are dropped — acceptable for emu speed. */
+    sceAudioOutput(audio_channel, audio_volume, (void *)buffer);
 }
 
 void Audio_Backend_Shutdown(void) {

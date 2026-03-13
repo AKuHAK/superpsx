@@ -436,7 +436,7 @@ void GPU_WriteGP0(uint32_t data)
         if (gpu_transfer_words == 0)
         {
             GPU_Backend_VRAMFlush(); /* pad and flush remaining VRAM words */
-            GPU_Backend_Flush(); /* sync for VRAM-to-CPU readback */
+            GPU_Backend_Flush();     /* sync for VRAM-to-CPU readback */
 
             if (vram_tx_x + vram_tx_w > 1024)
             {
@@ -541,7 +541,7 @@ void GPU_WriteGP0(uint32_t data)
                 /* Readback GS/GPU VRAM into psx_vram_shadow so that
                  * GPU_Read() returns correct data for C0+DMA reads. */
                 GPU_Backend_VRAMReadback(vram_read_x, vram_read_y,
-                                        vram_read_w, vram_read_h);
+                                         vram_read_w, vram_read_h);
 
                 DLOG("GP0(C0) VRAM Read: %dx%d at (%d,%d), %d words\n",
                      vram_read_w, vram_read_h, vram_read_x, vram_read_y, vram_read_remaining);
@@ -1091,7 +1091,9 @@ void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
             {
                 size = cmd_size;
                 if (i + size <= word_count)
+                {
                     Translate_GP0_to_GS(cmd_ptr);
+                }
                 else
                 {
                     /* Partial command at end of block → word-at-a-time */

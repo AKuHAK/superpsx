@@ -963,18 +963,16 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
      * No cold path entry needed — saves ~14 words (1 NOP + ~13 cold stub).
      * Layout: LW at,80(sp) / BNE at,zero,@skip / AND at,t8,s3 [delay] /
      *         ADDU at,at,s1 / SW t9,0(at) / @skip: */
-    int pure_ram_store = block_isc_cached
-                      && smrv_is_known_ram(rs_psx)
-                      && (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
+    int pure_ram_store = block_isc_cached && smrv_is_known_ram(rs_psx) && (size == 1 || (align_is_known(rs_psx) && (offset % size == 0)));
 
     if (pure_ram_store)
     {
-        EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+        EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
         uint32_t *isc_skip = code_ptr;
-        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
         emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
         uint32_t *bp_addu_w = code_ptr;
-        EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
+        EMIT_ADDU(REG_AT, REG_AT, REG_S1); /* addu at, at, s1     */
         uint32_t *bp_fault_w = code_ptr;
         if (size == 4)
             EMIT_SW(REG_T9, 0, REG_AT);
@@ -1219,11 +1217,11 @@ void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset)
      * SWL/SWR don't need alignment check.  No cold entry needed. */
     if (block_isc_cached && smrv_is_known_ram(rs_psx))
     {
-        EMIT_LW(REG_AT, 80, REG_SP);                     /* at = cached ISC     */
+        EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
         uint32_t *isc_skip = code_ptr;
-        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));           /* bne at,zero,@skip   */
+        emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
         emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
-        EMIT_ADDU(REG_AT, REG_AT, REG_S1);               /* addu at, at, s1     */
+        EMIT_ADDU(REG_AT, REG_AT, REG_S1);              /* addu at, at, s1     */
         if (is_left)
             EMIT_SWL(REG_T9, 0, REG_AT);
         else

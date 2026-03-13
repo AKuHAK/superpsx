@@ -558,7 +558,8 @@ static inline void check_stuck_detection(uint32_t pc)
 static inline void handle_vram_dump(uint32_t iterations)
 {
 #ifdef ENABLE_VRAM_DUMP
-    if ((iterations & 0xFFF) == 0) {
+    if ((iterations & 0xFFF) == 0)
+    {
         printf("[VRAM_DUMP] iterations=%u next=%u\n", iterations, next_vram_dump);
         fflush(stdout);
     }
@@ -755,7 +756,7 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
             be = lookup_block(pc);
             apply_pending_patches(pc, block);
             jit_ht_add(pc, block);
-            jit_flush_pending = 1;  /* Deferred: batch with buffer-reset / SMC recompile */
+            jit_flush_pending = 1; /* Deferred: batch with buffer-reset / SMC recompile */
         }
     }
 
@@ -904,41 +905,42 @@ static inline int run_jit_chain(uint64_t deadline)
      * real speed and Timer2 measurements stay accurate. */
     if (__builtin_expect(be && be->is_idle && cpu.pc == pc, 0))
     {
-        if (DMA_IsPending()) {
+        if (DMA_IsPending())
+        {
             idle_skip_count = 0;
         }
         else
         {
-        if (pc != idle_skip_pc)
-        {
-            idle_skip_pc = pc;
-            idle_skip_count = 0;
-        }
-        uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
-        if (++idle_skip_count >= threshold)
-        {
-            if (deadline > global_cycles)
+            if (pc != idle_skip_pc)
             {
+                idle_skip_pc = pc;
+                idle_skip_count = 0;
+            }
+            uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
+            if (++idle_skip_count >= threshold)
+            {
+                if (deadline > global_cycles)
+                {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
-                hotspot_idle_skips++;
-                hotspot_idle_cycles_skipped += (deadline - global_cycles);
+                    hotspot_idle_skips++;
+                    hotspot_idle_cycles_skipped += (deadline - global_cycles);
 #endif
-                global_cycles = deadline;
+                    global_cycles = deadline;
+                }
+                /* Restore poll patch so the block can re-execute normally
+                 * after the scheduler fires events that may change IO state.
+                 * Without this, the block stays patched to abort and never
+                 * actually reads the changed IO value. */
+                if (poll_patched_addr)
+                {
+                    poll_patched_addr[0] = poll_patched_saved[0];
+                    poll_patched_addr[1] = poll_patched_saved[1];
+                    poll_patched_addr = NULL;
+                    jit_flush_pending = 1;
+                }
+                idle_skip_count = 0;
+                return RUN_RES_BREAK;
             }
-            /* Restore poll patch so the block can re-execute normally
-             * after the scheduler fires events that may change IO state.
-             * Without this, the block stays patched to abort and never
-             * actually reads the changed IO value. */
-            if (poll_patched_addr)
-            {
-                poll_patched_addr[0] = poll_patched_saved[0];
-                poll_patched_addr[1] = poll_patched_saved[1];
-                poll_patched_addr = NULL;
-                jit_flush_pending = 1;
-            }
-            idle_skip_count = 0;
-            return RUN_RES_BREAK;
-        }
         } /* end DMA_IsPending else */
     }
     else

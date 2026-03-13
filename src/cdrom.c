@@ -30,14 +30,14 @@
 
 /* ---- Pending (INT2/INT5) response delays (cycles from command issue) ----
  * Derived from hardware measurements: reference ticks × 8. */
-#define PENDING_DELAY_INIT      3800000U  /* ~114ms — motor/head init */
-#define PENDING_DELAY_PAUSE     8000000U  /* ~240ms — brake spindle */
-#define PENDING_DELAY_STOP      6000000U  /* ~180ms — full motor stop */
-#define PENDING_DELAY_MOTORON   3000000U  /* ~90ms  — motor spinup */
-#define PENDING_DELAY_GETID      800000U  /* ~24ms  — disc identification */
-#define PENDING_DELAY_SEEKL     1000000U  /* ~30ms  — seek completion */
-#define PENDING_DELAY_READTOC  16000000U  /* ~480ms — full TOC read */
-#define PENDING_DELAY_DEFAULT    200000U  /* ~6ms   — generic fallback */
+#define PENDING_DELAY_INIT 3800000U     /* ~114ms — motor/head init */
+#define PENDING_DELAY_PAUSE 8000000U    /* ~240ms — brake spindle */
+#define PENDING_DELAY_STOP 6000000U     /* ~180ms — full motor stop */
+#define PENDING_DELAY_MOTORON 3000000U  /* ~90ms  — motor spinup */
+#define PENDING_DELAY_GETID 800000U     /* ~24ms  — disc identification */
+#define PENDING_DELAY_SEEKL 1000000U    /* ~30ms  — seek completion */
+#define PENDING_DELAY_READTOC 16000000U /* ~480ms — full TOC read */
+#define PENDING_DELAY_DEFAULT 200000U   /* ~6ms   — generic fallback */
 
 /* ---- BCD helpers ---- */
 static uint8_t dec_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
@@ -94,18 +94,18 @@ static struct
     uint8_t busy; /* 1 = processing command */
 
     /* Disc position tracking */
-    uint32_t setloc_lba;    /* Target set by Setloc (in LBA sectors) */
-    uint32_t cur_lba;       /* Current head position (LBA) */
-    uint8_t has_loc_header; /* 1 = GetlocL can return data */
-    uint8_t seek_error;     /* 1 = last seek failed */
-    uint8_t reading;        /* 1 = ReadN/ReadS in progress */
-    uint8_t mode;           /* SetMode value */
-    uint8_t disc_present;   /* 0 = no disc (ShellOpen), 1 = disc inserted */
-    int32_t read_delay;     /* Cycles until next INT1 delivery (legacy, used for state) */
-    int32_t pending_delay;  /* Cycles until pending response delivery (legacy) */
+    uint32_t setloc_lba;       /* Target set by Setloc (in LBA sectors) */
+    uint32_t cur_lba;          /* Current head position (LBA) */
+    uint8_t has_loc_header;    /* 1 = GetlocL can return data */
+    uint8_t seek_error;        /* 1 = last seek failed */
+    uint8_t reading;           /* 1 = ReadN/ReadS in progress */
+    uint8_t mode;              /* SetMode value */
+    uint8_t disc_present;      /* 0 = no disc (ShellOpen), 1 = disc inserted */
+    int32_t read_delay;        /* Cycles until next INT1 delivery (legacy, used for state) */
+    int32_t pending_delay;     /* Cycles until pending response delivery (legacy) */
     uint64_t pending_deadline; /* Absolute cycle when pending response becomes ready */
-    uint8_t seek_pending;       /* 1 = seek is in progress, waiting for scheduler */
-    uint8_t location_changed;   /* 1 = SetLoc was issued, first sector gets extra delay */
+    uint8_t seek_pending;      /* 1 = seek is in progress, waiting for scheduler */
+    uint8_t location_changed;  /* 1 = SetLoc was issued, first sector gets extra delay */
 
     /* Deferred first response (INT3) — mimics real CD controller latency */
     uint8_t deferred_response[RESPONSE_FIFO_SIZE];
@@ -251,7 +251,7 @@ static void cdrom_queue_response(const uint8_t *data, int count, uint8_t irq_typ
     cdrom.deferred_count = count;
     cdrom.deferred_int = irq_type;
     cdrom.has_deferred = 1;
-    cdrom.busy = 1;              /* Stay busy until response is delivered */
+    cdrom.busy = 1; /* Stay busy until response is delivered */
     Scheduler_ScheduleEvent(SCHED_EVENT_CDROM_DEFERRED,
                             global_cycles + 4000,
                             CDROM_DeferredCallback);
@@ -274,7 +274,7 @@ static void cdrom_queue_pending(const uint8_t *data, int count, uint8_t irq_type
 }
 
 /* ---- Execute a CD-ROM command ---- */
-static uint32_t cdrom_cmd_count = 0;  /* progress counter */
+static uint32_t cdrom_cmd_count = 0; /* progress counter */
 
 static void cdrom_execute_command(uint8_t cmd)
 {
@@ -551,7 +551,7 @@ static void cdrom_execute_command(uint8_t cmd)
             resp[0] = cdrom.stat;
             cdrom_queue_response(resp, 1, 3); /* INT3 */
             resp[0] = cdrom.stat;
-            resp[1] = 0x04;                  /* Seek error code */
+            resp[1] = 0x04;                                       /* Seek error code */
             cdrom_queue_pending(resp, 2, 5, PENDING_DELAY_SEEKL); /* INT5 error */
         }
         else
@@ -986,7 +986,7 @@ void CDROM_Write(uint32_t addr, uint32_t data)
             (void)old_flag;
             if (cdrom.int_flag == 0)
             {
-                cdrom_irq_active = 0; /* No longer level-triggering */
+                cdrom_irq_active = 0;                         /* No longer level-triggering */
                 Scheduler_RemoveEvent(SCHED_EVENT_CDROM_IRQ); /* Cancel pending signal */
             }
             if (val & 0x40)

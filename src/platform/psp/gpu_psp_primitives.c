@@ -360,6 +360,9 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
     case 0x40:
     { /* Lines */
+        /* Polyline start commands (0x48-0x4F, 0x58-0x5F) reach here via the
+         * initial Translate_GP0_to_GS call. The first segment is identical
+         * to a regular line; gpu_commands.c sets polyline_active afterwards. */
         int is_semi = (cmd & 0x02) != 0;
         int is_shaded = (cmd & 0x10) != 0;
         sceGuDisable(GU_TEXTURE_2D);

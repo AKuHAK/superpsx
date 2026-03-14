@@ -133,6 +133,7 @@ void GPU_Backend_Init(void) {
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_TEXTURE_2D);
     sceGuDisable(GU_BLEND);
+    sceGuShadeModel(GU_SMOOTH);
 
     sceGuFinish();
     sceGuSync(0, 0);

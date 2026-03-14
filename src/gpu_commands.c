@@ -824,7 +824,15 @@ void GPU_WriteGP0(uint32_t data)
         {
             uint32_t buff[1] = {data};
             Translate_GP0_to_GS(buff);
-            // Individual draw commands also batched
+        }
+        else if ((cmd & 0xE0) == 0x40 && (cmd & 0x08))
+        {
+            /* Polyline start (0x48-0x4F flat, 0x58-0x5F shaded):
+             * accumulate the first segment like a regular line. */
+            int poly_first_size = (cmd & 0x10) ? 4 : 3;
+            gpu_cmd_buffer[0] = data;
+            gpu_cmd_ptr = 1;
+            gpu_cmd_remaining = poly_first_size - 1;
         }
         break;
     }

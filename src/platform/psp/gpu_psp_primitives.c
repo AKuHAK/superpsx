@@ -186,45 +186,101 @@ static void setup_psx_texture(uint32_t clut_word)
 
 /* ── State Management ───────────────────────────────────────────── */
 
+/* Lazy GU state cache — avoid redundant sceGu calls.
+ * Reset to -1 (unknown) by Prim_InvalidateGSState(). */
+static int cached_blend_on = -1;   /* 0=off, 1=on */
+static int cached_blend_mode = -1; /* semi_trans_mode 0-3 */
+static int cached_dither_on = -1;  /* 0=off, 1=on */
+static int cached_tex_on = -1;     /* 0=off, 1=on */
+static int cached_color_test_on = -1;
+
 static void apply_dither(int is_shaded, int is_textured, int is_raw_tex)
 {
-    if (dither_enabled && (is_shaded || (is_textured && !is_raw_tex)))
-        sceGuEnable(GU_DITHER);
-    else
-        sceGuDisable(GU_DITHER);
+    int want = dither_enabled && (is_shaded || (is_textured && !is_raw_tex));
+    if (want != cached_dither_on) {
+        if (want) sceGuEnable(GU_DITHER);
+        else      sceGuDisable(GU_DITHER);
+        cached_dither_on = want;
+    }
 }
 
 static void apply_blend(int is_semi_trans)
 {
     if (is_semi_trans)
     {
-        sceGuEnable(GU_BLEND);
-        switch (semi_trans_mode)
-        {
-        case 0:
-            /* PSX: (Fc + Bc) / 2 — half foreground + half background */
-            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x80808080, 0x80808080);
-            break;
-        case 1:
-            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
-            break;
-        case 2:
-            sceGuBlendFunc(GU_REVERSE_SUBTRACT, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
-            break;
-        case 3:
-            sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x40404040, 0xFFFFFFFF);
-            break;
+        if (cached_blend_on != 1) {
+            sceGuEnable(GU_BLEND);
+            cached_blend_on = 1;
+        }
+        if (semi_trans_mode != cached_blend_mode) {
+            switch (semi_trans_mode)
+            {
+            case 0:
+                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x80808080, 0x80808080);
+                break;
+            case 1:
+                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
+                break;
+            case 2:
+                sceGuBlendFunc(GU_REVERSE_SUBTRACT, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
+                break;
+            case 3:
+                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x40404040, 0xFFFFFFFF);
+                break;
+            }
+            cached_blend_mode = semi_trans_mode;
         }
     }
     else
     {
-        sceGuDisable(GU_BLEND);
+        if (cached_blend_on != 0) {
+            sceGuDisable(GU_BLEND);
+            cached_blend_on = 0;
+        }
+    }
+}
+
+static inline void gu_enable_texture(void)
+{
+    if (cached_tex_on != 1) {
+        sceGuEnable(GU_TEXTURE_2D);
+        cached_tex_on = 1;
+    }
+}
+
+static inline void gu_disable_texture(void)
+{
+    if (cached_tex_on != 0) {
+        sceGuDisable(GU_TEXTURE_2D);
+        cached_tex_on = 0;
+    }
+}
+
+static inline void gu_enable_color_test(void)
+{
+    if (cached_color_test_on != 1) {
+        sceGuEnable(GU_COLOR_TEST);
+        sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
+        cached_color_test_on = 1;
+    }
+}
+
+static inline void gu_disable_color_test(void)
+{
+    if (cached_color_test_on != 0) {
+        sceGuDisable(GU_COLOR_TEST);
+        cached_color_test_on = 0;
     }
 }
 
 void Prim_InvalidateGSState(void)
 {
     gs_state.valid = 0;
+    cached_blend_on = -1;
+    cached_blend_mode = -1;
+    cached_dither_on = -1;
+    cached_tex_on = -1;
+    cached_color_test_on = -1;
 }
 
 void Prim_InvalidateTexCache(void)
@@ -305,8 +361,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         }
 
         /* Draw via sceGu — FillRect uses absolute VRAM coords (no draw offset) */
-        sceGuDisable(GU_TEXTURE_2D);
-        sceGuDisable(GU_BLEND);
+        gu_disable_texture();
+        apply_blend(0);
         PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
         v[0].color = color;
         v[0].x = fx;
@@ -345,7 +401,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
         if (!is_textured)
         {
-            sceGuDisable(GU_TEXTURE_2D);
+            gu_disable_texture();
             PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(nv * sizeof(PspVertFlat));
             uint32_t base_color = PSX_to_ABGR(psx_cmd[0]);
             int p = 1; /* skip cmd+color word */
@@ -380,9 +436,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         }
         else
         {
-            sceGuEnable(GU_TEXTURE_2D);
-            sceGuEnable(GU_COLOR_TEST);
-            sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
+            gu_enable_texture();
+            gu_enable_color_test();
             /* Extract texpage from vertex 1's UV word (upper 16 bits) */
             {
                 int tpage_idx = is_shaded ? 5 : 4; /* vertex1 UV+texpage position */
@@ -435,8 +490,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             sceGuDrawArray(is_quad ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            nv, NULL, v);
-            sceGuDisable(GU_TEXTURE_2D);
-            sceGuDisable(GU_COLOR_TEST);
+            gu_disable_texture();
+            gu_disable_color_test();
             gpu_frame_stats.poly_tex++;
             return p;
         }
@@ -449,7 +504,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
          * to a regular line; gpu_commands.c sets polyline_active afterwards. */
         int is_semi = (cmd & 0x02) != 0;
         int is_shaded = (cmd & 0x10) != 0;
-        sceGuDisable(GU_TEXTURE_2D);
+        gu_disable_texture();
         apply_blend(is_semi);
         apply_dither(is_shaded, 0, 0);
 
@@ -522,7 +577,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
         if (!is_textured)
         {
-            sceGuDisable(GU_TEXTURE_2D);
+            gu_disable_texture();
             PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
             v[0].color = color;
             v[0].x = x0;
@@ -539,9 +594,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         }
         else
         {
-            sceGuEnable(GU_TEXTURE_2D);
-            sceGuEnable(GU_COLOR_TEST);
-            sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
+            gu_enable_texture();
+            gu_enable_color_test();
             setup_psx_texture(clut_word);
 
             /* Raw-texture: use texture color directly, ignore vertex color */
@@ -564,8 +618,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             sceGuDrawArray(GU_SPRITES,
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                            2, NULL, v);
-            sceGuDisable(GU_TEXTURE_2D);
-            sceGuDisable(GU_COLOR_TEST);
+            gu_disable_texture();
+            gu_disable_color_test();
             gpu_frame_stats.rect_tex++;
         }
         return p;
@@ -580,7 +634,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
                           int16_t x1, int16_t y1, uint32_t color1,
                           int is_shaded, int is_semi_trans)
 {
-    sceGuDisable(GU_TEXTURE_2D);
+    gu_disable_texture();
     apply_blend(is_semi_trans);
     apply_dither(is_shaded, 0, 0);
     PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));

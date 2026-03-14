@@ -186,6 +186,14 @@ static void setup_psx_texture(uint32_t clut_word)
 
 /* ── State Management ───────────────────────────────────────────── */
 
+static void apply_dither(int is_shaded, int is_textured, int is_raw_tex)
+{
+    if (dither_enabled && (is_shaded || (is_textured && !is_raw_tex)))
+        sceGuEnable(GU_DITHER);
+    else
+        sceGuDisable(GU_DITHER);
+}
+
 static void apply_blend(int is_semi_trans)
 {
     if (is_semi_trans)
@@ -329,9 +337,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_shaded = (cmd & 0x10) != 0;
         int is_textured = (cmd & 0x04) != 0;
         int is_semi = (cmd & 0x02) != 0;
+        int is_raw_tex = is_textured && (cmd & 0x01);
         int nv = is_quad ? 4 : 3;
 
         apply_blend(is_semi);
+        apply_dither(is_shaded, is_textured, is_raw_tex);
 
         if (!is_textured)
         {
@@ -388,7 +398,6 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             setup_psx_texture(clut_word);
 
             /* Raw-texture: use texture color directly, ignore vertex color */
-            int is_raw_tex = (cmd & 0x01) && is_textured;
             if (is_raw_tex)
                 sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
 
@@ -442,6 +451,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         int is_shaded = (cmd & 0x10) != 0;
         sceGuDisable(GU_TEXTURE_2D);
         apply_blend(is_semi);
+        apply_dither(is_shaded, 0, 0);
 
         PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
         uint32_t c0 = PSX_to_ABGR(psx_cmd[0]);
@@ -507,6 +517,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         }
 
         apply_blend(is_semi);
+        /* Rectangles are never shaded; dither only for textured non-raw */
+        apply_dither(0, is_textured, is_raw_rect);
 
         if (!is_textured)
         {
@@ -570,6 +582,7 @@ void Emit_Line_Segment_AD(int16_t x0, int16_t y0, uint32_t color0,
 {
     sceGuDisable(GU_TEXTURE_2D);
     apply_blend(is_semi_trans);
+    apply_dither(is_shaded, 0, 0);
     PspVertFlat *v = (PspVertFlat *)sceGuGetMemory(2 * sizeof(PspVertFlat));
     int16_t sx0, sy0, sx1, sy1;
     PSX_to_PSP(x0, y0, &sx0, &sy0);

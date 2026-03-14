@@ -132,7 +132,19 @@ void GPU_Backend_Init(void) {
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_TEXTURE_2D);
     sceGuDisable(GU_BLEND);
+    sceGuDisable(GU_DITHER);
     sceGuShadeModel(GU_SMOOTH);
+
+    /* PSX ordered dither matrix (-4..+3) */
+    {
+        ScePspIMatrix4 dm = {
+            { -4,  0, -3,  1 },
+            {  2, -2,  3, -1 },
+            { -3,  1, -4,  0 },
+            {  3, -1,  2, -2 }
+        };
+        sceGuSetDither(&dm);
+    }
 
     sceGuFinish();
     sceGuSync(0, 0);

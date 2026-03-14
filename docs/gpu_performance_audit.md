@@ -64,8 +64,8 @@ Esta auditoría analiza la implementación actual de la GPU para PSP en `superps
 
 | # | Optimización | Impacto | Esfuerzo | Estado |
 |---|-------------|---------|----------|--------|
-| 1 | **Lazy State Tracking** (blend/dither/texture/color_test) | ALTO | Medio | Pendiente |
-| 2 | **Eliminar sceGuTexFlush en cache hit** | MEDIO | Bajo | Pendiente |
+| 1 | **Lazy State Tracking** (blend/dither/texture/color_test) | ALTO | Medio | **Hecho** (f98e80f) |
+| 2 | **Eliminar sceGuTexFlush en cache hit** + cache tex func/filter | MEDIO | Bajo | **Hecho** (553e69c) |
 | 3 | **Vertex Buffer Batching** | ALTO | Alto | Futuro |
 | 4 | **DMA para cache fills** | BAJO | Medio | Futuro |
 | 5 | **Pre-calcular display blit params** | MÍNIMO | Bajo | Futuro |

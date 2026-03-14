@@ -56,6 +56,9 @@ static int tcache_lru_tick = 0;
 
 static uint16_t __attribute__((aligned(16))) clut_buf[256]; /* CLUT scratch */
 static uint32_t cached_clut_word = 0xFFFFFFFF;
+static const void *cached_tex_base = NULL;  /* last tex ptr for sceGuTexFlush skip */
+static int cached_tex_func = -1;  /* 0=MODULATE, 1=REPLACE */
+static int cached_tex_const = 0;  /* 1=filter/scale/offset already set */
 
 /* Return EDRAM pointer for cache slot N */
 static inline void *tcache_slot_ptr(int slot)
@@ -100,7 +103,7 @@ static void setup_psx_texture(uint32_t clut_word)
     int tpx = tex_page_x;
     int tpy = tex_page_y;
 
-    sceGuTexFlush();
+    int need_flush = 0;
 
     if (tex_page_format == 0)
     {
@@ -117,6 +120,9 @@ static void setup_psx_texture(uint32_t clut_word)
                        &psx_vram_shadow[vy * 1024 + tpx], 128);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
+            need_flush = 1;
+        } else if (slot_ptr != cached_tex_base) {
+            need_flush = 1;
         }
 
         /* CLUT: update if clut_word changed */
@@ -132,8 +138,10 @@ static void setup_psx_texture(uint32_t clut_word)
 
         sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
         sceGuClutLoad(2, clut_buf);
+        if (need_flush) sceGuTexFlush();
         sceGuTexMode(GU_PSM_T4, 0, 0, 0);
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
+        cached_tex_base = slot_ptr;
     }
     else if (tex_page_format == 1)
     {
@@ -150,6 +158,9 @@ static void setup_psx_texture(uint32_t clut_word)
                        &psx_vram_shadow[vy * 1024 + tpx], 256);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
+            need_flush = 1;
+        } else if (slot_ptr != cached_tex_base) {
+            need_flush = 1;
         }
 
         /* CLUT: update if clut_word changed */
@@ -165,23 +176,35 @@ static void setup_psx_texture(uint32_t clut_word)
 
         sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
         sceGuClutLoad(32, clut_buf);
+        if (need_flush) sceGuTexFlush();
         sceGuTexMode(GU_PSM_T8, 0, 0, 0);
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
+        cached_tex_base = slot_ptr;
     }
     else
     {
         /* 15bpp: GE reads directly from EDRAM VRAM (stride = 1024). */
         uint16_t *edram_vram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr()
                                             + PSP_VRAM_OFFSET);
+        const void *tex_ptr = &edram_vram[tpy * 1024 + tpx];
+        if (tex_ptr != cached_tex_base) {
+            sceGuTexFlush();
+            cached_tex_base = tex_ptr;
+        }
         sceGuTexMode(GU_PSM_5551, 0, 0, 0);
-        sceGuTexImage(0, 256, 256, 1024,
-                      &edram_vram[tpy * 1024 + tpx]);
+        sceGuTexImage(0, 256, 256, 1024, tex_ptr);
     }
 
-    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
-    sceGuTexScale(1.0f, 1.0f);
-    sceGuTexOffset(0.0f, 0.0f);
+    if (cached_tex_func != 0) {
+        sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+        cached_tex_func = 0;
+    }
+    if (!cached_tex_const) {
+        sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+        sceGuTexScale(1.0f, 1.0f);
+        sceGuTexOffset(0.0f, 0.0f);
+        cached_tex_const = 1;
+    }
 }
 
 /* ── State Management ───────────────────────────────────────────── */
@@ -281,6 +304,9 @@ void Prim_InvalidateGSState(void)
     cached_dither_on = -1;
     cached_tex_on = -1;
     cached_color_test_on = -1;
+    cached_tex_base = NULL;
+    cached_tex_func = -1;
+    cached_tex_const = 0;
 }
 
 void Prim_InvalidateTexCache(void)
@@ -288,6 +314,7 @@ void Prim_InvalidateTexCache(void)
     for (int i = 0; i < TCACHE_SLOTS; i++)
         tcache[i].tpx = -1;
     cached_clut_word = 0xFFFFFFFF;
+    cached_tex_base = NULL;
 }
 void Prim_InvalidateTexCache_Page(int tpx, int tpy)
 {
@@ -308,6 +335,7 @@ void Prim_InvalidateTexCache_Region(int rx, int ry, int rw, int rh)
             tcache[i].tpx = -1;
     }
     cached_clut_word = 0xFFFFFFFF; /* CLUT may live in written region */
+    cached_tex_base = NULL;
 }
 
 /* ── Primary Dispatch ───────────────────────────────────────────── */
@@ -453,8 +481,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             setup_psx_texture(clut_word);
 
             /* Raw-texture: use texture color directly, ignore vertex color */
-            if (is_raw_tex)
+            if (is_raw_tex && cached_tex_func != 1) {
                 sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+                cached_tex_func = 1;
+            }
 
             PspVertTex *v = (PspVertTex *)sceGuGetMemory(nv * sizeof(PspVertTex));
             uint32_t base_color = is_raw_tex ? PSX_to_ABGR(psx_cmd[0])
@@ -599,8 +629,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             setup_psx_texture(clut_word);
 
             /* Raw-texture: use texture color directly, ignore vertex color */
-            if (is_raw_rect)
+            if (is_raw_rect && cached_tex_func != 1) {
                 sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+                cached_tex_func = 1;
+            }
 
             PspVertTex *v = (PspVertTex *)sceGuGetMemory(2 * sizeof(PspVertTex));
             v[0].u = (float)Apply_Tex_Window_U(u0);

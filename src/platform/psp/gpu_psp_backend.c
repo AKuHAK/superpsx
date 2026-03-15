@@ -184,7 +184,9 @@ void GPU_Backend_Init(void) {
 void GPU_Backend_Flush(void) {
     Prim_FlushBatch();
     sceGuFinish();
-    sceGuSync(0, 0);
+    /* Non-blocking poll: skip expensive blocking sync when GE already idle */
+    if (sceGuSync(0, 1))
+        sceGuSync(0, 0);
     sceGuStart(GU_DIRECT, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
 }
@@ -192,7 +194,8 @@ void GPU_Backend_Flush(void) {
 void GPU_Backend_FlushSync(void) {
     Prim_FlushBatch();
     sceGuFinish();
-    sceGuSync(0, 0);
+    if (sceGuSync(0, 1))
+        sceGuSync(0, 0);
     sceGuStart(GU_DIRECT, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
 }
@@ -323,7 +326,9 @@ void GPU_Backend_UpdateDisplay(void)
     }
 
     sceGuFinish();
-    sceGuSync(0, 0);
+    /* Non-blocking poll: avoid blocking syscall when GE already idle */
+    if (sceGuSync(0, 1))
+        sceGuSync(0, 0);
     sceGuSwapBuffers();
 
     /* Toggle back buffer for next frame */

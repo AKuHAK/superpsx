@@ -63,8 +63,9 @@ void Audio_Backend_Play(const int16_t *buffer, int size_bytes) {
         samples_processed += to_copy;
 
         if (audio_buf_samples >= PSP_AUDIO_BLOCK_SAMPLES) {
-            /* Output the full block. Blocking call ensures we don't drop samples. */
-            sceAudioOutputBlocking(audio_channel, audio_volume, audio_internal_buf);
+            /* Non-blocking: submit and continue. If channel busy, block dropped
+             * — acceptable for emu speed vs stalling CPU 11ms per block. */
+            sceAudioOutput(audio_channel, audio_volume, audio_internal_buf);
             audio_buf_samples = 0;
         }
     }

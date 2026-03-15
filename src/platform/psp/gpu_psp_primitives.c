@@ -54,8 +54,55 @@ static struct {
 
 static int tcache_lru_tick = 0;
 
-static uint16_t __attribute__((aligned(16))) clut_buf[256]; /* CLUT scratch */
 static uint32_t cached_clut_word = 0xFFFFFFFF;
+
+/* ── CLUT Transform Cache ───────────────────────────────────────
+ *  Caches STP-transformed CLUT data keyed by (clut_word, content_hash).
+ *  Avoids re-running the transform loop + dcache writeback when the
+ *  same palette is reused (common in fight scenes with multiple sprites).
+ * ─────────────────────────────────────────────────────────────────── */
+#define CLUT_CACHE_SIZE 8
+
+static struct {
+    uint32_t clut_word;
+    uint32_t src_hash;
+    uint16_t __attribute__((aligned(16))) data[256];
+} clut_cache[CLUT_CACHE_SIZE];
+static int clut_cache_rr = 0;
+
+static uint32_t clut_fast_hash(const uint16_t *src, int count)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < count; i++) {
+        h ^= src[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Look up CLUT in cache. Returns pointer to (possibly cached) transform buffer.
+ * On hit (*hit=1): buffer already contains valid STP-transformed + dcache-flushed data.
+ * On miss (*hit=0): caller must fill buffer, then flush dcache. */
+static uint16_t *clut_cache_get(uint32_t cword, const uint16_t *src,
+                                int count, int *hit)
+{
+    uint32_t hash = clut_fast_hash(src, count);
+    for (int i = 0; i < CLUT_CACHE_SIZE; i++) {
+        if (clut_cache[i].clut_word == cword &&
+            clut_cache[i].src_hash == hash) {
+            *hit = 1;
+            return clut_cache[i].data;
+        }
+    }
+    int slot = clut_cache_rr;
+    clut_cache_rr = (clut_cache_rr + 1) & (CLUT_CACHE_SIZE - 1);
+    clut_cache[slot].clut_word = cword;
+    clut_cache[slot].src_hash = hash;
+    *hit = 0;
+    return clut_cache[slot].data;
+}
+
+static uint16_t *active_clut_ptr = NULL;
 static const void *cached_tex_base = NULL;  /* last tex ptr for sceGuTexFlush skip */
 static int cached_tex_func = -1;  /* 0=MODULATE, 1=REPLACE */
 static int cached_tex_const = 0;  /* 1=filter/scale/offset already set */
@@ -134,19 +181,24 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            for (int i = 0; i < 16; i++) {
-                uint16_t c = csrc[i];
-                if (c == 0) { clut_buf[i] = 0; continue; }
-                c |= 0x8000;
-                if ((c & 0x7FFF) == 0) c |= 0x0001; /* shift black → near-black */
-                clut_buf[i] = c;
+            int clut_hit;
+            uint16_t *cd = clut_cache_get(clut_word, csrc, 16, &clut_hit);
+            if (!clut_hit) {
+                for (int i = 0; i < 16; i++) {
+                    uint16_t c = csrc[i];
+                    if (c == 0) { cd[i] = 0; continue; }
+                    c |= 0x8000;
+                    if ((c & 0x7FFF) == 0) c |= 0x0001;
+                    cd[i] = c;
+                }
+                sceKernelDcacheWritebackRange(cd, 32);
             }
-            sceKernelDcacheWritebackRange(clut_buf, 32);
+            active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
 
         sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
-        sceGuClutLoad(2, clut_buf);
+        sceGuClutLoad(2, active_clut_ptr);
         if (need_flush) sceGuTexFlush();
         sceGuTexMode(GU_PSM_T4, 0, 0, 0);
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
@@ -177,19 +229,24 @@ static void setup_psx_texture(uint32_t clut_word)
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
             int clut_y = (clut_word >> 22) & 0x1FF;
             uint16_t *csrc = &psx_vram_shadow[clut_y * 1024 + clut_x];
-            for (int i = 0; i < 256; i++) {
-                uint16_t c = csrc[i];
-                if (c == 0) { clut_buf[i] = 0; continue; }
-                c |= 0x8000;
-                if ((c & 0x7FFF) == 0) c |= 0x0001; /* shift black → near-black */
-                clut_buf[i] = c;
+            int clut_hit;
+            uint16_t *cd = clut_cache_get(clut_word, csrc, 256, &clut_hit);
+            if (!clut_hit) {
+                for (int i = 0; i < 256; i++) {
+                    uint16_t c = csrc[i];
+                    if (c == 0) { cd[i] = 0; continue; }
+                    c |= 0x8000;
+                    if ((c & 0x7FFF) == 0) c |= 0x0001;
+                    cd[i] = c;
+                }
+                sceKernelDcacheWritebackRange(cd, 512);
             }
-            sceKernelDcacheWritebackRange(clut_buf, 512);
+            active_clut_ptr = cd;
             cached_clut_word = clut_word;
         }
 
         sceGuClutMode(GU_PSM_5551, 0, 0xFF, 0);
-        sceGuClutLoad(32, clut_buf);
+        sceGuClutLoad(32, active_clut_ptr);
         if (need_flush) sceGuTexFlush();
         sceGuTexMode(GU_PSM_T8, 0, 0, 0);
         sceGuTexImage(0, 256, 256, 256, slot_ptr);

@@ -219,15 +219,31 @@ void GPU_Backend_UpdateDisplay(void) {
     sceGuTexScale(1.0f, 1.0f);
     sceGuTexOffset(0.0f, 0.0f);
 
-    /* 4:3 output region */
-    int out_h = PSP_SCREEN_H;
-    int out_w = (out_h * 4) / 3;
-    if (out_w > PSP_SCREEN_W) { out_w = PSP_SCREEN_W; out_h = (out_w * 3) / 4; }
-    int pad_x = (PSP_SCREEN_W - out_w) / 2;
-    int pad_y = (PSP_SCREEN_H - out_h) / 2;
-
     int src_w = psx_active_width;
     int src_h = psx_active_height;
+
+    int out_w, out_h, pad_x, pad_y;
+    if (src_w > 0 && src_h > 0 && src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
+        /* Integer upscale: largest NxN factor that fits */
+        int scale = 1;
+        while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
+               (src_h * (scale + 1)) <= PSP_SCREEN_H)
+            scale++;
+        out_w = src_w * scale;
+        out_h = src_h * scale;
+    } else if (src_w > 0 && src_h > 0) {
+        /* Integer downscale: smallest divisor that fits */
+        int div = 2;
+        while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
+            div++;
+        out_w = src_w / div;
+        out_h = src_h / div;
+    } else {
+        out_w = PSP_SCREEN_W;
+        out_h = PSP_SCREEN_H;
+    }
+    pad_x = (PSP_SCREEN_W - out_w) / 2;
+    pad_y = (PSP_SCREEN_H - out_h) / 2;
 
     /* Textured sprite strips (tiled for modes > 512 wide) */
     int col = 0;

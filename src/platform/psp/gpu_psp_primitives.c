@@ -456,33 +456,42 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (fw == 0 || fh == 0)
             return 3;
 
-        /* Update shadow VRAM (needed for texture cache reads).
-         * EDRAM is written by the GPU sprite below — no CPU EDRAM write needed. */
-        if (psx_vram_shadow) {
+        /* Update shadow VRAM + EDRAM directly.
+         * EDRAM write needed because 15bpp textures read from EDRAM.
+         * GPU sprite also draws to EDRAM but PPSSPP may not propagate it
+         * correctly for subsequent texture reads from the same region. */
+        {
             uint16_t r5 = (uint16_t)((cmd_word >> 3) & 0x1F);
             uint16_t g5 = (uint16_t)((cmd_word >> 11) & 0x1F);
             uint16_t b5 = (uint16_t)((cmd_word >> 19) & 0x1F);
             uint16_t col16 = r5 | (g5 << 5) | (b5 << 10);
             if (mask_set_bit) col16 |= 0x8000;
+            uint16_t *edram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
             int ey = (fy + fh > 512) ? 512 : fy + fh;
             int ex = (fx + fw > 1024) ? 1024 : fx + fw;
             if (!mask_check_bit) {
-                /* Fast path: row fill without per-pixel checks */
+                /* Fast path: no per-pixel mask check */
                 int w = ex - fx;
                 for (int y = fy; y < ey; y++) {
-                    uint16_t *row = &psx_vram_shadow[y * 1024 + fx];
-                    for (int x = 0; x < w; x++) row[x] = col16;
+                    uint16_t *er = &edram[y * 1024 + fx];
+                    for (int x = 0; x < w; x++) er[x] = col16;
+                    if (psx_vram_shadow) {
+                        uint16_t *sr = &psx_vram_shadow[y * 1024 + fx];
+                        for (int x = 0; x < w; x++) sr[x] = col16;
+                    }
                 }
             } else {
-                /* Slow path: skip pixels with bit15 set (mask protection) */
-                uint16_t *edram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
                 for (int y = fy; y < ey; y++)
                     for (int x = fx; x < ex; x++) {
                         int idx = y * 1024 + x;
                         if (edram[idx] & 0x8000) continue;
-                        psx_vram_shadow[idx] = col16;
+                        edram[idx] = col16;
+                        if (psx_vram_shadow) psx_vram_shadow[idx] = col16;
                     }
             }
+            sceKernelDcacheWritebackRange(
+                &edram[fy * 1024 + fx],
+                (uint32_t)(fw * 2 + (fh - 1) * 1024 * 2));
         }
 
         /* Draw via sceGu — direct DrawArray (not batched) */

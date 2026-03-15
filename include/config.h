@@ -23,6 +23,8 @@ typedef struct {
     int  show_fps;            /* 1 = show frame counter on OSD (default 0) */
     int  perf_report;         /* 1 = print JIT/EMU perf stats to stdout (default 0) */
     int  cdrom_fast;          /* 1 = minimal CDROM pending delays (default 0) */
+    int  display_mode;        /* 0=4:3 aspect, 1=stretch fill, 2=integer (default 0) */
+    int  display_filter;      /* 1 = bilinear filter (default 0 = nearest) */
 } PSXConfig;
 
 extern PSXConfig psx_config;

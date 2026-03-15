@@ -49,6 +49,8 @@ int load_config_file(void)
     psx_config.show_fps = 0;
     psx_config.perf_report = 0;
     psx_config.cdrom_fast = 0;
+    psx_config.display_mode = 0;
+    psx_config.display_filter = 0;
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -182,6 +184,23 @@ int load_config_file(void)
         {
             psx_config.cdrom_fast = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: cdrom_fast = %d\n", psx_config.cdrom_fast);
+        }
+        else if (strcasecmp(key, "display_integer") == 0)
+        {
+            psx_config.display_mode = (atoi(val) != 0 && strcasecmp(val, "false") != 0) ? 2 : 0;
+            printf("CONFIG: display_mode = %d (via display_integer)\n", psx_config.display_mode);
+        }
+        else if (strcasecmp(key, "display_mode") == 0)
+        {
+            psx_config.display_mode = atoi(val);
+            if (psx_config.display_mode < 0 || psx_config.display_mode > 2)
+                psx_config.display_mode = 0;
+            printf("CONFIG: display_mode = %d\n", psx_config.display_mode);
+        }
+        else if (strcasecmp(key, "display_filter") == 0)
+        {
+            psx_config.display_filter = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
+            printf("CONFIG: display_filter = %d\n", psx_config.display_filter);
         }
         line = next;
     }

@@ -9,6 +9,7 @@
 #include "gpu_backend.h"
 #include "osd.h"
 #include "profiler.h"
+#include "config.h"
 #include <pspgu.h>
 #include <pspdisplay.h>
 #include <pspge.h>
@@ -224,7 +225,8 @@ void GPU_Backend_UpdateDisplay(void)
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_5551, 0, 0, 0);
     sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-    sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+    sceGuTexFilter(psx_config.display_filter ? GU_LINEAR : GU_NEAREST,
+                   psx_config.display_filter ? GU_LINEAR : GU_NEAREST);
     sceGuTexWrap(GU_CLAMP, GU_CLAMP);
     sceGuTexScale(1.0f, 1.0f);
     sceGuTexOffset(0.0f, 0.0f);
@@ -239,21 +241,38 @@ void GPU_Backend_UpdateDisplay(void)
         int src_w = psx_active_width;
         int src_h = psx_active_height;
 
-        if (src_w > 0 && src_h > 0 && src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
-            /* Integer upscale: largest NxN factor that fits */
-            int scale = 1;
-            while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
-                   (src_h * (scale + 1)) <= PSP_SCREEN_H)
-                scale++;
-            blit_cache.out_w = src_w * scale;
-            blit_cache.out_h = src_h * scale;
-        } else if (src_w > 0 && src_h > 0) {
-            /* Integer downscale: smallest divisor that fits */
-            int div = 2;
-            while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
-                div++;
-            blit_cache.out_w = src_w / div;
-            blit_cache.out_h = src_h / div;
+        if (src_w > 0 && src_h > 0) {
+            if (psx_config.display_mode == 2) {
+                /* Integer scaling: NxN factor */
+                if (src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
+                    int scale = 1;
+                    while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
+                           (src_h * (scale + 1)) <= PSP_SCREEN_H)
+                        scale++;
+                    blit_cache.out_w = src_w * scale;
+                    blit_cache.out_h = src_h * scale;
+                } else {
+                    int div = 2;
+                    while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
+                        div++;
+                    blit_cache.out_w = src_w / div;
+                    blit_cache.out_h = src_h / div;
+                }
+            } else if (psx_config.display_mode == 1) {
+                /* Stretch to fill — ignore aspect ratio */
+                blit_cache.out_w = PSP_SCREEN_W;
+                blit_cache.out_h = PSP_SCREEN_H;
+            } else {
+                /* 4:3 aspect-ratio preserving stretch (default) */
+                int out_w = PSP_SCREEN_W;
+                int out_h = (src_h * PSP_SCREEN_W) / src_w;
+                if (out_h > PSP_SCREEN_H) {
+                    out_h = PSP_SCREEN_H;
+                    out_w = (src_w * PSP_SCREEN_H) / src_h;
+                }
+                blit_cache.out_w = out_w;
+                blit_cache.out_h = out_h;
+            }
         } else {
             blit_cache.out_w = PSP_SCREEN_W;
             blit_cache.out_h = PSP_SCREEN_H;

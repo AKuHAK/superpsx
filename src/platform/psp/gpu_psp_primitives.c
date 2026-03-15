@@ -158,19 +158,29 @@ static void setup_psx_texture(uint32_t clut_word)
 
     if (tex_page_format == 0)
     {
-        /* 4bpp T4: 256×256 = 32KB in cache slot */
+        /* 4bpp T4: 256×256 texels = 64 16-bit pixels × 256 rows */
         int hit;
         int slot = tcache_lookup(tpx, tpy, 0, &hit);
         void *slot_ptr = tcache_slot_ptr(slot);
 
         if (!hit) {
-            uint8_t *dst = (uint8_t *)slot_ptr;
-            for (int row = 0; row < 256; row++) {
-                int vy = (tpy + row) & 511;
-                memcpy(dst + row * 128,
-                       &psx_vram_shadow[vy * 1024 + tpx], 128);
+            /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
+             * T4: 256 texels wide = 64 pixels at 16bpp (4 texels per pixel). */
+            void *edram_base = (void *)((uintptr_t)sceGeEdramGetAddr()
+                                        + PSP_VRAM_OFFSET);
+            int copy_h = 256;
+            if (tpy + 256 > 512) copy_h = 512 - tpy;
+            sceGuCopyImage(GU_PSM_5551,
+                           tpx, tpy, 64, copy_h, 1024, edram_base,
+                           0, 0, 64, slot_ptr);
+            if (copy_h < 256) {
+                /* Wrap: remaining rows from top of VRAM */
+                int rem = 256 - copy_h;
+                void *dst2 = (void *)((uintptr_t)slot_ptr + copy_h * 128);
+                sceGuCopyImage(GU_PSM_5551,
+                               tpx, 0, 64, rem, 1024, edram_base,
+                               0, 0, 64, dst2);
             }
-            sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
@@ -212,13 +222,22 @@ static void setup_psx_texture(uint32_t clut_word)
         void *slot_ptr = tcache_slot_ptr(slot);
 
         if (!hit) {
-            uint8_t *dst = (uint8_t *)slot_ptr;
-            for (int row = 0; row < 256; row++) {
-                int vy = (tpy + row) & 511;
-                memcpy(dst + row * 256,
-                       &psx_vram_shadow[vy * 1024 + tpx], 256);
+            /* GE hardware copy: EDRAM PSX VRAM → EDRAM cache slot.
+             * T8: 256 texels wide = 128 pixels at 16bpp (2 texels per pixel). */
+            void *edram_base = (void *)((uintptr_t)sceGeEdramGetAddr()
+                                        + PSP_VRAM_OFFSET);
+            int copy_h = 256;
+            if (tpy + 256 > 512) copy_h = 512 - tpy;
+            sceGuCopyImage(GU_PSM_5551,
+                           tpx, tpy, 128, copy_h, 1024, edram_base,
+                           0, 0, 128, slot_ptr);
+            if (copy_h < 256) {
+                int rem = 256 - copy_h;
+                void *dst2 = (void *)((uintptr_t)slot_ptr + copy_h * 256);
+                sceGuCopyImage(GU_PSM_5551,
+                               tpx, 0, 128, rem, 1024, edram_base,
+                               0, 0, 128, dst2);
             }
-            sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;

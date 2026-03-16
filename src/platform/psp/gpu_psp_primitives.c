@@ -208,13 +208,10 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
     uint32_t cmd_word = psx_cmd[0];
     uint32_t cmd = (cmd_word >> 24) & 0xFF;
 
-    /* FillRect (GP0 0x02) — special case: absolute coords, changes scissor.
-     * Must flush batch before drawing since scissor changes. */
+    /* FillRect (GP0 0x02) — GU sprite in current list, no flush needed. */
     if (cmd == 0x02)
     {
         vbatch_flush();
-        /* Flush pending GE list before CPU EDRAM write (SEND mode). */
-        GPU_Backend_Flush();
         uint32_t color = PSX_to_ABGR(psx_cmd[0]);
         uint32_t xy = psx_cmd[1];
         uint32_t wh = psx_cmd[2];
@@ -225,45 +222,24 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         if (fw == 0 || fh == 0)
             return 3;
 
-        /* Update shadow VRAM + EDRAM directly.
-         * EDRAM write needed because 15bpp textures read from EDRAM.
-         * GPU sprite also draws to EDRAM but PPSSPP may not propagate it
-         * correctly for subsequent texture reads from the same region. */
+        /* Update shadow VRAM for CPU readback (GP0 C0h) */
+        if (psx_vram_shadow)
         {
             uint16_t r5 = (uint16_t)((cmd_word >> 3) & 0x1F);
             uint16_t g5 = (uint16_t)((cmd_word >> 11) & 0x1F);
             uint16_t b5 = (uint16_t)((cmd_word >> 19) & 0x1F);
             uint16_t col16 = r5 | (g5 << 5) | (b5 << 10);
             if (mask_set_bit) col16 |= 0x8000;
-            uint16_t *edram = (uint16_t *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET);
             int ey = (fy + fh > 512) ? 512 : fy + fh;
             int ex = (fx + fw > 1024) ? 1024 : fx + fw;
-            if (!mask_check_bit) {
-                /* Fast path: no per-pixel mask check */
-                int w = ex - fx;
-                for (int y = fy; y < ey; y++) {
-                    uint16_t *er = &edram[y * 1024 + fx];
-                    for (int x = 0; x < w; x++) er[x] = col16;
-                    if (psx_vram_shadow) {
-                        uint16_t *sr = &psx_vram_shadow[y * 1024 + fx];
-                        for (int x = 0; x < w; x++) sr[x] = col16;
-                    }
-                }
-            } else {
-                for (int y = fy; y < ey; y++)
-                    for (int x = fx; x < ex; x++) {
-                        int idx = y * 1024 + x;
-                        if (edram[idx] & 0x8000) continue;
-                        edram[idx] = col16;
-                        if (psx_vram_shadow) psx_vram_shadow[idx] = col16;
-                    }
+            int w = ex - fx;
+            for (int y = fy; y < ey; y++) {
+                uint16_t *sr = &psx_vram_shadow[y * 1024 + fx];
+                for (int x = 0; x < w; x++) sr[x] = col16;
             }
-            sceKernelDcacheWritebackRange(
-                &edram[fy * 1024 + fx],
-                (uint32_t)(fw * 2 + (fh - 1) * 1024 * 2));
         }
 
-        /* Draw via sceGu — direct DrawArray (not batched) */
+        /* GU sprite — stays in current display list, no flush */
         gu_disable_texture();
         gu_disable_color_test();
         apply_blend(0);
@@ -275,7 +251,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                        GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
                        2, NULL, (void *)((uintptr_t)v | 0x40000000));
         sceGuScissor(draw_clip_x1, draw_clip_y1,
-                     draw_clip_x2 + 1, draw_clip_y2 + 1);
+                     draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
         gpu_frame_stats.fill++;
 
         return 3;

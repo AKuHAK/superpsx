@@ -97,12 +97,14 @@ uint32_t raw_draw_area_br = 0;
 uint32_t raw_draw_offset = 0;
 
 /* PSP-specific state */
+#define DEBUG_SHOW_FULL_VRAM 0  /* TEMP: show all 1024x512 PSX VRAM */
 int psx_active_width = 320;
 int psx_active_height = 240;
 void *vram_mirror = (void *)PSP_VRAM_OFFSET;
 
 /* Pre-calculated display blit parameters (recalc on resolution change) */
-static struct {
+static struct
+{
     int out_w, out_h, pad_x, pad_y;
     int src_w, src_h;
     int start_x, start_y;
@@ -120,10 +122,12 @@ int vpool_offset;
 
 /* ── GPU Core Implementation ────────────────────────────────────── */
 
-void GPU_Backend_Init(void) {
+void GPU_Backend_Init(void)
+{
     /* Allocate PSX VRAM shadow in main RAM (for CPU readback via C0).
      * 64-byte aligned for DCache writeback. */
-    if (!psx_vram_shadow) {
+    if (!psx_vram_shadow)
+    {
         psx_vram_shadow = (uint16_t *)memalign(64, 1024 * 512 * sizeof(uint16_t));
         if (psx_vram_shadow)
             memset(psx_vram_shadow, 0, 1024 * 512 * sizeof(uint16_t));
@@ -132,9 +136,9 @@ void GPU_Backend_Init(void) {
     sceGuInit();
     sceGuStart(GU_DIRECT, display_list);
 
-    /* Standard double-buffer: draw→FB0, display→FB1.
-     * sceGuSwapBuffers() exchanges them each frame.
-     * PSX VRAM is an offscreen render target via DrawBufferList(). */
+    /* Double-buffer: draw→FB0, display→FB1.
+     * sceGuSwapBuffers() exchanges them after each blit.
+     * Blits are triggered by GP1(05h) display-start changes, not VBlank. */
     sceGuDrawBuffer(GU_PSM_5551, (void *)PSP_FB0_OFFSET, PSP_BUF_W);
     sceGuDispBuffer(PSP_SCREEN_W, PSP_SCREEN_H, (void *)PSP_FB1_OFFSET, PSP_BUF_W);
 
@@ -148,11 +152,10 @@ void GPU_Backend_Init(void) {
     /* PSX ordered dither matrix (-4..+3) */
     {
         ScePspIMatrix4 dm = {
-            { -4,  0, -3,  1 },
-            {  2, -2,  3, -1 },
-            { -3,  1, -4,  0 },
-            {  3, -1,  2, -2 }
-        };
+            {-4, 0, -3, 1},
+            {2, -2, 3, -1},
+            {-3, 1, -4, 0},
+            {3, -1, 2, -2}};
         sceGuSetDither(&dm);
     }
 
@@ -172,17 +175,20 @@ void GPU_Backend_Init(void) {
     vpool_offset = 0;
     sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
-    sceGuScissor(draw_clip_x1, draw_clip_y1,
-                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+    sceGuScissor(0, 0, 1024, 512);
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_CULL_FACE);
     sceGuDisable(GU_TEXTURE_2D);
     sceGuOffset(0, 0);
     sceGuViewport(0, 0, 1024, 512);
+
+    sceGuScissor(draw_clip_x1, draw_clip_y1,
+                 draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
 }
 
-void GPU_Backend_Flush(void) {
+void GPU_Backend_Flush(void)
+{
     Prim_FlushBatch();
     sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
@@ -196,7 +202,8 @@ void GPU_Backend_Flush(void) {
     Prim_InvalidateGSState();
 }
 
-void GPU_Backend_FlushSync(void) {
+void GPU_Backend_FlushSync(void)
+{
     Prim_FlushBatch();
     sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
@@ -209,7 +216,8 @@ void GPU_Backend_FlushSync(void) {
     Prim_InvalidateGSState();
 }
 
-void GPU_Backend_SetupEnvironment(void) {
+void GPU_Backend_SetupEnvironment(void)
+{
     sceGuStart(GU_SEND, display_list);
 }
 
@@ -232,7 +240,7 @@ void GPU_Backend_UpdateDisplay(void)
     sceGuClearColor(0xFF000000);
     sceGuClear(GU_COLOR_BUFFER_BIT);
 
-    /* Use offscreen PSX VRAM as texture source (render-to-texture) */
+    /* Use offscreen PSX VRAM as texture source */
     sceGuTexFlush();
     sceGuEnable(GU_TEXTURE_2D);
     sceGuTexMode(GU_PSM_5551, 0, 0, 0);
@@ -243,49 +251,72 @@ void GPU_Backend_UpdateDisplay(void)
     sceGuTexScale(1.0f, 1.0f);
     sceGuTexOffset(0.0f, 0.0f);
 
+#if DEBUG_SHOW_FULL_VRAM
+    /* Debug: show entire 1024x512 PSX VRAM scaled to PSP screen */
+    {
+        for (int strip = 0; strip < 2; strip++)
+        {
+            uintptr_t tex_base = (uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET + strip * 512 * 2;
+            sceGuTexImage(0, 512, 512, 1024, (void *)tex_base);
+
+            typedef struct { float u, v; int16_t x, y, z; } BlitVert;
+            BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
+            bv[0].u = 0.0f;
+            bv[0].v = 0.0f;
+            bv[0].x = (int16_t)(strip * PSP_SCREEN_W / 2);
+            bv[0].y = 0;
+            bv[0].z = 0;
+            bv[1].u = 512.0f;
+            bv[1].v = 512.0f;
+            bv[1].x = (int16_t)((strip + 1) * PSP_SCREEN_W / 2);
+            bv[1].y = (int16_t)PSP_SCREEN_H;
+            bv[1].z = 0;
+            sceGuDrawArray(GU_SPRITES,
+                           GU_TEXTURE_32BITF | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                           2, NULL, (void *)((uintptr_t)bv | 0x40000000));
+        }
+    }
+#else
     /* Recalculate blit params only when resolution or display offset changed */
-    if (!blit_cache.valid ||
-        blit_cache.src_w != psx_active_width ||
+    if (blit_cache.src_w != psx_active_width ||
         blit_cache.src_h != psx_active_height ||
         blit_cache.start_x != display_start_x ||
-        blit_cache.start_y != display_start_y) {
-
+        blit_cache.start_y != display_start_y)
+    {
         int src_w = psx_active_width;
         int src_h = psx_active_height;
 
-        if (src_w > 0 && src_h > 0) {
-            if (psx_config.display_mode == 2) {
-                /* Integer scaling: NxN factor */
-                if (src_w <= PSP_SCREEN_W && src_h <= PSP_SCREEN_H) {
-                    int scale = 1;
-                    while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
-                           (src_h * (scale + 1)) <= PSP_SCREEN_H)
-                        scale++;
-                    blit_cache.out_w = src_w * scale;
-                    blit_cache.out_h = src_h * scale;
-                } else {
-                    int div = 2;
-                    while ((src_w / div) > PSP_SCREEN_W || (src_h / div) > PSP_SCREEN_H)
-                        div++;
-                    blit_cache.out_w = src_w / div;
-                    blit_cache.out_h = src_h / div;
-                }
-            } else if (psx_config.display_mode == 1) {
-                /* Stretch to fill — ignore aspect ratio */
+        if (src_w > 0 && src_h > 0)
+        {
+            if (psx_config.display_mode == 2)
+            {
+                int scale = 1;
+                while ((src_w * (scale + 1)) <= PSP_SCREEN_W &&
+                       (src_h * (scale + 1)) <= PSP_SCREEN_H)
+                    scale++;
+                blit_cache.out_w = src_w * scale;
+                blit_cache.out_h = src_h * scale;
+            }
+            else if (psx_config.display_mode == 1)
+            {
                 blit_cache.out_w = PSP_SCREEN_W;
                 blit_cache.out_h = PSP_SCREEN_H;
-            } else {
-                /* 4:3 aspect-ratio preserving stretch (default) */
+            }
+            else
+            {
                 int out_w = PSP_SCREEN_W;
                 int out_h = (src_h * PSP_SCREEN_W) / src_w;
-                if (out_h > PSP_SCREEN_H) {
+                if (out_h > PSP_SCREEN_H)
+                {
                     out_h = PSP_SCREEN_H;
                     out_w = (src_w * PSP_SCREEN_H) / src_h;
                 }
                 blit_cache.out_w = out_w;
                 blit_cache.out_h = out_h;
             }
-        } else {
+        }
+        else
+        {
             blit_cache.out_w = PSP_SCREEN_W;
             blit_cache.out_h = PSP_SCREEN_H;
         }
@@ -298,43 +329,57 @@ void GPU_Backend_UpdateDisplay(void)
         blit_cache.valid = 1;
     }
 
-    int src_w  = blit_cache.src_w;
-    int src_h  = blit_cache.src_h;
-    int out_w  = blit_cache.out_w;
-    int out_h  = blit_cache.out_h;
-    int pad_x  = blit_cache.pad_x;
-    int pad_y  = blit_cache.pad_y;
+    {
+        int src_w = blit_cache.src_w;
+        int src_h = blit_cache.src_h;
+        int out_w = blit_cache.out_w;
+        int out_h = blit_cache.out_h;
+        int pad_x = blit_cache.pad_x;
+        int pad_y = blit_cache.pad_y;
 
-    /* Textured sprite strips (tiled for modes > 512 wide) */
-    int col = 0;
-    while (col < src_w) {
-        int strip_w = src_w - col;
-        if (strip_w > 512) strip_w = 512;
+        int col = 0;
+        while (col < src_w)
+        {
+            int strip_w = src_w - col;
+            if (strip_w > 512)
+                strip_w = 512;
 
-        uintptr_t tex_base = (uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET
-                           + (display_start_x + col) * 2;
-        int tex_pw = 1; while (tex_pw < strip_w) tex_pw <<= 1;
-        int tex_ph = 1; while (tex_ph < (display_start_y + src_h)) tex_ph <<= 1;
-        if (tex_pw > 512) tex_pw = 512;
-        if (tex_ph > 512) tex_ph = 512;
-        sceGuTexImage(0, tex_pw, tex_ph, 1024, (void *)tex_base);
+            uintptr_t tex_base = (uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET + (display_start_x + col) * 2;
+            int tex_pw = 1;
+            while (tex_pw < strip_w)
+                tex_pw <<= 1;
+            int tex_ph = 1;
+            while (tex_ph < (display_start_y + src_h))
+                tex_ph <<= 1;
+            if (tex_pw > 512)
+                tex_pw = 512;
+            if (tex_ph > 512)
+                tex_ph = 512;
+            sceGuTexImage(0, tex_pw, tex_ph, 1024, (void *)tex_base);
 
-        int scr_x0 = pad_x + (col * out_w) / src_w;
-        int scr_x1 = pad_x + ((col + strip_w) * out_w) / src_w;
+            int scr_x0 = pad_x + (col * out_w) / src_w;
+            int scr_x1 = pad_x + ((col + strip_w) * out_w) / src_w;
 
-        typedef struct { float u, v; int16_t x, y, z; } BlitVert;
-        BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
-        bv[0].u = 0.0f;                         bv[0].v = (float)display_start_y;
-        bv[0].x = (int16_t)scr_x0;              bv[0].y = (int16_t)pad_y;         bv[0].z = 0;
-        bv[1].u = (float)strip_w;               bv[1].v = (float)(display_start_y + src_h);
-        bv[1].x = (int16_t)scr_x1;              bv[1].y = (int16_t)(pad_y + out_h); bv[1].z = 0;
-        sceGuDrawArray(GU_SPRITES,
-                       GU_TEXTURE_32BITF | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
-                       2, NULL, (void *)((uintptr_t)bv | 0x40000000));
-        col += strip_w;
+            typedef struct { float u, v; int16_t x, y, z; } BlitVert;
+            BlitVert *bv = (BlitVert *)vpool_alloc(2 * sizeof(BlitVert));
+            bv[0].u = 0.0f;
+            bv[0].v = (float)display_start_y;
+            bv[0].x = (int16_t)scr_x0;
+            bv[0].y = (int16_t)pad_y;
+            bv[0].z = 0;
+            bv[1].u = (float)strip_w;
+            bv[1].v = (float)(display_start_y + src_h);
+            bv[1].x = (int16_t)scr_x1;
+            bv[1].y = (int16_t)(pad_y + out_h);
+            bv[1].z = 0;
+            sceGuDrawArray(GU_SPRITES,
+                           GU_TEXTURE_32BITF | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                           2, NULL, (void *)((uintptr_t)bv | 0x40000000));
+            col += strip_w;
+        }
     }
+#endif /* DEBUG_SHOW_FULL_VRAM */
 
-    /* Writeback vertex pool so GE can read it, then submit entire list */
     sceKernelDcacheWritebackRange(vpool_buf, vpool_offset);
     sceGuFinish();
 
@@ -351,39 +396,46 @@ void GPU_Backend_UpdateDisplay(void)
     sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
-                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+                 draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
     sceGuEnable(GU_SCISSOR_TEST);
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_TEXTURE_2D);
 
-    /* Blit changed GE state — invalidate all cached state so next GP0
-     * primitives re-apply blend/dither/texture/color_test properly. */
     Prim_InvalidateGSState();
 }
 
-void GPU_Backend_VBlank(void) {
-    gpu_stat ^= 0x80000000;   /* Toggle GPUSTAT bit 31 (LCF) — BIOS polls this for VSync */
-    GPU_Backend_UpdateDisplay();
+void GPU_Backend_VBlank(void)
+{
+    gpu_pending_vblank_flush = 1;
+    gpu_stat ^= 0x80000000; /* Toggle GPUSTAT bit 31 (LCF) */
     osd_vblank_count++;
+#if DEBUG_SHOW_FULL_VRAM
+    GPU_Backend_UpdateDisplay();  /* Debug: blit every VBlank */
+#endif
 }
 
 /* ── Drawing Environment ───────────────────────────────────────── */
 
-void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2) {
-    /* Scissor in PSX VRAM coordinates — GE renders directly to 1024×512 EDRAM */
-    sceGuScissor(x1, y1, x2 + 1, y2 + 1);
+void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2)
+{
+    /* Scissor in PSX VRAM coordinates — GE renders directly to 1024×512 EDRAM.
+     * sceGuScissor takes (x, y, width, height). */
+    sceGuScissor(x1, y1, x2 - x1 + 1, y2 - y1 + 1);
 }
 
-void GPU_Backend_SetDisplayFB(int x, int y) {
-    display_start_x = x;
-    display_start_y = y;
+void GPU_Backend_SetDisplayFB(int x, int y)
+{
+    /* Equivalent to PS2 writing DISPFB registers — trigger blit + swap */
+    blit_cache.valid = 0;
+    GPU_Backend_UpdateDisplay();
 }
 
-void GPU_Backend_SetResolution(int interlace, int mode) {
+void GPU_Backend_SetResolution(int interlace, int mode)
+{
     static const int hres_table[] = {256, 320, 512, 640};
     uint32_t hres1 = (gpu_stat >> 17) & 3;
     uint32_t hres2 = (gpu_stat >> 16) & 1;
-    uint32_t vres  = (gpu_stat >> 19) & 1;
+    uint32_t vres = (gpu_stat >> 19) & 1;
 
     psx_active_width = hres2 ? 368 : hres_table[hres1];
     if (mode == 3) /* PAL */
@@ -393,67 +445,88 @@ void GPU_Backend_SetResolution(int interlace, int mode) {
     (void)interlace;
 }
 
-void GPU_Backend_SetMaskBit(int set, int check) {
-    if (set || check) {
+void GPU_Backend_SetMaskBit(int set, int check)
+{
+    if (set || check)
+    {
         sceGuEnable(GU_STENCIL_TEST);
-        if (check) {
+        if (check)
+        {
             sceGuStencilFunc(GU_NOTEQUAL, 1, 0xFF);
             sceGuStencilOp(GU_KEEP, GU_KEEP,
                            set ? GU_REPLACE : GU_KEEP);
-        } else {
+        }
+        else
+        {
             sceGuStencilFunc(GU_ALWAYS, 1, 0xFF);
             sceGuStencilOp(GU_REPLACE, GU_REPLACE, GU_REPLACE);
         }
-    } else {
+    }
+    else
+    {
         sceGuDisable(GU_STENCIL_TEST);
     }
 }
 
-void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1, int clip_x2, int clip_y2) {
-    (void)clip_x1; (void)clip_y1; (void)clip_x2; (void)clip_y2;
+void GPU_Backend_ClearVRAM(int clip_x1, int clip_y1, int clip_x2, int clip_y2)
+{
+    (void)clip_x1;
+    (void)clip_y1;
+    (void)clip_x2;
+    (void)clip_y2;
     memset((void *)((uintptr_t)sceGeEdramGetAddr() + PSP_VRAM_OFFSET),
            0, 1024 * 512 * 2);
     if (psx_vram_shadow)
         memset(psx_vram_shadow, 0, 1024 * 512 * 2);
 }
 
-void GPU_Backend_InvalidateState(void) {
+void GPU_Backend_InvalidateState(void)
+{
     Prim_InvalidateGSState();
 }
 
-int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer) {
+int GPU_Backend_TryFastPoly(uint32_t *cmd_buffer)
+{
     (void)cmd_buffer;
     return 0;
 }
 
 /* ── GPU Read / Status ─────────────────────────────────────────── */
 
-uint32_t GPU_Read(void) {
-    if (vram_read_remaining > 0) {
+uint32_t GPU_Read(void)
+{
+    if (vram_read_remaining > 0)
+    {
         uint16_t p0 = 0, p1 = 0;
-        if (psx_vram_shadow && vram_read_w > 0) {
+        if (psx_vram_shadow && vram_read_w > 0)
+        {
             int px0 = vram_read_x + (vram_read_pixel % vram_read_w);
             int py0 = vram_read_y + (vram_read_pixel / vram_read_w);
-            if (px0 < 1024 && py0 < 512) p0 = psx_vram_shadow[py0 * 1024 + px0];
+            if (px0 < 1024 && py0 < 512)
+                p0 = psx_vram_shadow[py0 * 1024 + px0];
             vram_read_pixel++;
             int px1 = vram_read_x + (vram_read_pixel % vram_read_w);
             int py1 = vram_read_y + (vram_read_pixel / vram_read_w);
-            if (px1 < 1024 && py1 < 512) p1 = psx_vram_shadow[py1 * 1024 + px1];
+            if (px1 < 1024 && py1 < 512)
+                p1 = psx_vram_shadow[py1 * 1024 + px1];
             vram_read_pixel++;
         }
         vram_read_remaining--;
-        if (vram_read_remaining == 0) gpu_stat &= ~0x08000000;
+        if (vram_read_remaining == 0)
+            gpu_stat &= ~0x08000000;
         gpu_read = (uint32_t)p0 | ((uint32_t)p1 << 16);
     }
     return gpu_read;
 }
 
-uint32_t GPU_ReadStatus(void) {
+uint32_t GPU_ReadStatus(void)
+{
     extern uint64_t global_cycles;
     extern uint64_t scheduler_cached_earliest;
     extern void Scheduler_DispatchEvents(uint64_t now);
 
-    if (global_cycles < gpu_busy_until) {
+    if (global_cycles < gpu_busy_until)
+    {
         global_cycles = gpu_busy_until;
         gpu_busy_until = 0;
         while (global_cycles >= scheduler_cached_earliest)

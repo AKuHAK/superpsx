@@ -163,13 +163,20 @@ void GPU_Backend_SetScissor(int x1, int y1, int x2, int y2)
     Push_GIF_Data(GS_SET_SCISSOR(x1, scax1, y1, scay1), GS_REG_SCISSOR_1);
 }
 
+#define DEBUG_SHOW_FULL_VRAM 0  /* Set to 1 to show full 1024x512 PSX VRAM */
+
 void GPU_Backend_SetDisplayFB(int x, int y)
 {
     uint64_t dispfb = 0;
     dispfb |= (uint64_t)PSX_VRAM_FBW << 9;
     dispfb |= (uint64_t)PSX_VRAM_PSM << 15;
+#if DEBUG_SHOW_FULL_VRAM
+    /* Force display from (0,0) to see full VRAM */
+    (void)x; (void)y;
+#else
     dispfb |= (uint64_t)x << 32;
     dispfb |= (uint64_t)y << 43;
+#endif
     *((volatile uint64_t *)0x12000070) = dispfb;
     *((volatile uint64_t *)0x12000090) = dispfb;
 }

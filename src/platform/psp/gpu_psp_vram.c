@@ -152,7 +152,7 @@ void GPU_Backend_VRAMReadback(int x, int y, int w, int h) {
     sceGuStart(GU_SEND, display_list);
     sceGuDrawBufferList(GU_PSM_5551, (void *)PSP_VRAM_OFFSET, 1024);
     sceGuScissor(draw_clip_x1, draw_clip_y1,
-                 draw_clip_x2 + 1, draw_clip_y2 + 1);
+                 draw_clip_x2 - draw_clip_x1 + 1, draw_clip_y2 - draw_clip_y1 + 1);
     sceGuEnable(GU_SCISSOR_TEST);
 }
 

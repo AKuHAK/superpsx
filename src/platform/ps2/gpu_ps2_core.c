@@ -10,6 +10,8 @@
 #include "osd.h"
 #include "scheduler.h"
 
+#define DEBUG_SHOW_FULL_VRAM 0  /* Set to 1 to show all 1024x512 PSX VRAM */
+
 /* ═══════════════════════════════════════════════════════════════════
  *  Global GPU state — definitions (declared extern in gpu_state.h)
  * ═══════════════════════════════════════════════════════════════════ */
@@ -225,6 +227,26 @@ void GPU_Flush(void)
 
 void Update_GS_Display(void)
 {
+#if DEBUG_SHOW_FULL_VRAM
+    {
+        /* Debug: show full 1024×512 PSX VRAM. MAGH=1 (2×) → 2048 VCK fits in 2560 line */
+        int magh = 1;
+        int dw = 1024 * (magh + 1) - 1;
+        int dh = 511;
+        int magv = 0;
+        int dx = 650 + (2560 - (dw + 1)) / 2;
+        int dy = 18;
+        uint64_t display = (uint64_t)(dx & 0xFFF) |
+                           ((uint64_t)(dy & 0x7FF) << 12) |
+                           ((uint64_t)(magh & 0xF) << 23) |
+                           ((uint64_t)(magv & 0x3) << 27) |
+                           ((uint64_t)(dw & 0xFFF) << 32) |
+                           ((uint64_t)(dh & 0x7FF) << 44);
+        *((volatile uint64_t *)0x12000080) = display;
+        *((volatile uint64_t *)0x120000A0) = display;
+        return;
+    }
+#endif
     /* 1. Determine base PSX resolution */
     int psx_w;
     if (disp_hres368)

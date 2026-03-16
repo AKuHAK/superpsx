@@ -121,6 +121,9 @@ void GTE_VBlankUpdate(void);
 /* VU0 fast-path state (flag-read detection) */
 extern int gte_flag_read_count;
 extern int gte_use_vu0;
+#ifdef PLATFORM_PSP
+extern int gte_use_vfpu;
+#endif
 
 /* VU0 JIT cache: contiguous layout so LQC2 can use base+offset.
  * Populated by vu0_prepare_mvmva() before each VU0 matrix multiply.

@@ -29,9 +29,21 @@
 int gte_flag_read_count = 0;
 int gte_use_vu0 = 0; /* 0=exact C path, 1=VU0 fast path */
 
+#ifdef PLATFORM_PSP
+#include "gte_vfpu.h"
+int gte_use_vfpu = 0; /* 0=exact C path, 1=VFPU fast path */
+#endif
+
 void GTE_VBlankUpdate(void)
 {
+#ifdef PLATFORM_PSP
+    /* PSP: only set gte_use_vfpu. Do NOT set gte_use_vu0 — the JIT
+     * checks gte_use_vu0 at compile time and would emit PS2 VU0
+     * instructions that the PSP can't execute. */
+    gte_use_vfpu = psx_config.gte_vu0;
+#else
     gte_use_vu0 = psx_config.gte_vu0;
+#endif
 }
 
 #ifdef ENABLE_HOST_LOG
@@ -564,6 +576,16 @@ static void gte_mvmva(R3000CPU *cpu, int sf, int lm, int mx, int v, int cv)
     if (gte_use_vu0 && sf && mx != 3 && cv != 2)
     {
         gte_mvmva_vu0(cpu, lm, mx, v, cv);
+        return;
+    }
+#endif
+#ifdef PLATFORM_PSP
+    /* VFPU fast path: same constraints as VU0 */
+    if (gte_use_vfpu && sf && mx != 3 && cv != 2)
+    {
+        gte_flag_vfpu = gte_flag;
+        gte_mvmva_vfpu(cpu, lm, mx, v, cv);
+        gte_flag = gte_flag_vfpu;
         return;
     }
 #endif

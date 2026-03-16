@@ -87,6 +87,7 @@ if(TARGET_PSP)
         src/platform/psp/platform_psp.c
         src/platform/psp/audio_psp_backend.c
         src/platform/psp/vu0_micro_psp.c
+        src/platform/psp/gte_vfpu.c
     )
     set(PLATFORM_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/src/platform/psp)
 else()
@@ -491,6 +492,59 @@ else()
         VERBATIM
     )
 endif()
+
+# ============================================================================
+# GTE Playground — C vs VFPU comparison (PSP only)
+# ============================================================================
+if(TARGET_PSP)
+set(GTE_PLAYGROUND_SOURCES
+    tests/gte_playground/gte_playground_main.c
+    src/gte.c
+    src/platform/psp/gte_vfpu.c
+)
+
+add_executable(gte_playground.elf EXCLUDE_FROM_ALL ${GTE_PLAYGROUND_SOURCES})
+
+target_include_directories(gte_playground.elf PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/src/platform/psp
+)
+
+target_compile_options(gte_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
+target_compile_definitions(gte_playground.elf PRIVATE GTE_PLAYGROUND PLATFORM_PSP)
+
+target_link_libraries(gte_playground.elf PRIVATE
+    -lm
+    -lc
+    -lpspdebug
+    -lpspdisplay
+    -lpspge
+    -lpspkernel
+)
+
+# Fix up import stubs
+add_custom_command(
+    TARGET gte_playground.elf
+    POST_BUILD COMMAND
+    "$ENV{PSPDEV}/bin/psp-fixup-imports" "$<TARGET_FILE:gte_playground.elf>"
+    COMMENT "Calling psp-fixup-imports for gte_playground.elf"
+)
+
+# Run target
+set(GTE_PG_EMU_CMD "${PPSSPP_PATH}")
+list(APPEND GTE_PG_EMU_CMD "${CMAKE_CURRENT_BINARY_DIR}/gte_playground.elf")
+string(REPLACE ";" "\\;" GTE_PG_EMU_CMD_ESC "${GTE_PG_EMU_CMD}")
+
+add_custom_target(run-gte-playground
+    COMMAND ${CMAKE_COMMAND}
+        "-DPPSSPP_CMD=${GTE_PG_EMU_CMD_ESC}"
+        -P "${EMU_RUN_SCRIPT}"
+    DEPENDS gte_playground.elf
+    COMMENT "Running GTE Playground in PPSSPP"
+    VERBATIM
+)
+endif() # TARGET_PSP (GTE Playground)
 
 # ============================================================================
 # GPU Playground — measure expansion of GPU commands (PS2 only)

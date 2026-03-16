@@ -84,6 +84,9 @@ extern unsigned int display_list[];
 void Tex_SetupIfChanged(uint32_t clut_word);
 void Tex_ApplyFuncReplace(void);
 void Tex_InvalidateState(void);
+#ifdef ENABLE_PSP_STRIDE_HACK
+extern float tex_v_scale;  /* V coordinate multiplier for stride hack (1.0, 2.0, 4.0) */
+#endif
 
 static inline void *vpool_alloc(int size) {
     size = (size + 3) & ~3;  /* 4-byte align */

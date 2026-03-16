@@ -73,6 +73,10 @@ static int cached_tex_func = -1;   /* 0=MODULATE, 1=REPLACE */
 static int cached_tex_const = 0;
 static int cached_ge_tex_mode = -1;
 static const uint16_t *cached_ge_clut_ptr = NULL;
+#ifdef ENABLE_PSP_STRIDE_HACK
+float tex_v_scale = 1.0f;  /* V multiplier for stride hack (extern in state.h) */
+static float cached_tex_v_scale = -1.0f;
+#endif
 
 /* Texture key — skip setup when unchanged */
 static int cached_tex_tpx = -1, cached_tex_tpy = -1, cached_tex_fmt = -1;
@@ -120,34 +124,37 @@ static void setup_psx_texture(uint32_t clut_word)
 
     if (tex_page_format == 0)
     {
-        /* 4bpp T4 */
+#ifdef ENABLE_PSP_STRIDE_HACK
+        /* 4bpp T4 — zero-copy from EDRAM VRAM with stride hack (V×4) */
+        uint8_t *edram = (uint8_t *)sceGeEdramGetAddr() + PSP_VRAM_OFFSET;
+        const void *tex_ptr = edram + (tpy * 1024 + tpx) * 2;
+        if (tex_ptr != cached_tex_base)
+            need_flush = 1;
+#else
+        /* 4bpp T4 — copy texpage to main RAM tcache (256×256, tbw=256) */
         int hit;
         int slot = tcache_lookup(tpx, tpy, 0, &hit);
         void *slot_ptr = tcache_slot_ptr(slot);
         if (hit) gpu_frame_stats.texcache_hit++;
         else     gpu_frame_stats.texcache_miss++;
-
         if (!hit) {
             int copy_h = 256;
             if (tpy + 256 > 512) copy_h = 512 - tpy;
-            for (int row = 0; row < copy_h; row++) {
+            for (int row = 0; row < copy_h; row++)
                 memcpy((uint8_t *)slot_ptr + row * 128,
-                       &psx_vram_shadow[(tpy + row) * 1024 + tpx],
-                       128);
-            }
+                       &psx_vram_shadow[(tpy + row) * 1024 + tpx], 128);
             if (copy_h < 256) {
                 int rem = 256 - copy_h;
-                for (int row = 0; row < rem; row++) {
+                for (int row = 0; row < rem; row++)
                     memcpy((uint8_t *)slot_ptr + (copy_h + row) * 128,
-                           &psx_vram_shadow[row * 1024 + tpx],
-                           128);
-                }
+                           &psx_vram_shadow[row * 1024 + tpx], 128);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 128);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
         }
+#endif
 
         if (clut_word != cached_clut_word) {
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
@@ -188,39 +195,48 @@ static void setup_psx_texture(uint32_t clut_word)
             sceGuTexMode(GU_PSM_T4, 0, 0, 0);
             cached_ge_tex_mode = GU_PSM_T4;
         }
+#ifdef ENABLE_PSP_STRIDE_HACK
+        sceGuTexImage(0, 256, 512, 1024, tex_ptr);
+        cached_tex_base = tex_ptr;
+        tex_v_scale = 4.0f;
+#else
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
         cached_tex_base = slot_ptr;
+#endif
     }
     else if (tex_page_format == 1)
     {
-        /* 8bpp T8 */
+#ifdef ENABLE_PSP_STRIDE_HACK
+        /* 8bpp T8 — zero-copy from EDRAM VRAM with stride hack (V×2) */
+        uint8_t *edram = (uint8_t *)sceGeEdramGetAddr() + PSP_VRAM_OFFSET;
+        const void *tex_ptr = edram + (tpy * 1024 + tpx) * 2;
+        if (tex_ptr != cached_tex_base)
+            need_flush = 1;
+#else
+        /* 8bpp T8 — copy texpage to main RAM tcache (256×256, tbw=256) */
         int hit;
         int slot = tcache_lookup(tpx, tpy, 1, &hit);
         void *slot_ptr = tcache_slot_ptr(slot);
         if (hit) gpu_frame_stats.texcache_hit++;
         else     gpu_frame_stats.texcache_miss++;
-
         if (!hit) {
             int copy_h = 256;
             if (tpy + 256 > 512) copy_h = 512 - tpy;
-            for (int row = 0; row < copy_h; row++) {
+            for (int row = 0; row < copy_h; row++)
                 memcpy((uint8_t *)slot_ptr + row * 256,
-                       &psx_vram_shadow[(tpy + row) * 1024 + tpx],
-                       256);
-            }
+                       &psx_vram_shadow[(tpy + row) * 1024 + tpx], 256);
             if (copy_h < 256) {
                 int rem = 256 - copy_h;
-                for (int row = 0; row < rem; row++) {
+                for (int row = 0; row < rem; row++)
                     memcpy((uint8_t *)slot_ptr + (copy_h + row) * 256,
-                           &psx_vram_shadow[row * 1024 + tpx],
-                           256);
-                }
+                           &psx_vram_shadow[row * 1024 + tpx], 256);
             }
             sceKernelDcacheWritebackRange(slot_ptr, 256 * 256);
             need_flush = 1;
         } else if (slot_ptr != cached_tex_base) {
             need_flush = 1;
         }
+#endif
 
         if (clut_word != cached_clut_word) {
             int clut_x = ((clut_word >> 16) & 0x3F) * 16;
@@ -261,8 +277,14 @@ static void setup_psx_texture(uint32_t clut_word)
             sceGuTexMode(GU_PSM_T8, 0, 0, 0);
             cached_ge_tex_mode = GU_PSM_T8;
         }
+#ifdef ENABLE_PSP_STRIDE_HACK
+        sceGuTexImage(0, 256, 512, 1024, tex_ptr);
+        cached_tex_base = tex_ptr;
+        tex_v_scale = 2.0f;
+#else
         sceGuTexImage(0, 256, 256, 256, slot_ptr);
         cached_tex_base = slot_ptr;
+#endif
     }
     else
     {
@@ -280,17 +302,27 @@ static void setup_psx_texture(uint32_t clut_word)
         }
         cached_ge_clut_ptr = NULL;
         sceGuTexImage(0, 256, 256, 1024, tex_ptr);
+#ifdef ENABLE_PSP_STRIDE_HACK
+        tex_v_scale = 1.0f;
+#endif
     }
 
     if (cached_tex_func != 0) {
         sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
         cached_tex_func = 0;
     }
-    if (!cached_tex_const) {
+    if (!cached_tex_const
+#ifdef ENABLE_PSP_STRIDE_HACK
+        || cached_tex_v_scale != tex_v_scale
+#endif
+    ) {
         sceGuTexFilter(GU_NEAREST, GU_NEAREST);
         sceGuTexScale(1.0f, 1.0f);
         sceGuTexOffset(0.0f, 0.0f);
         cached_tex_const = 1;
+#ifdef ENABLE_PSP_STRIDE_HACK
+        cached_tex_v_scale = tex_v_scale;
+#endif
     }
 }
 
@@ -327,6 +359,10 @@ void Tex_InvalidateState(void)
     cached_tex_base = NULL;
     cached_tex_func = -1;
     cached_tex_const = 0;
+#ifdef ENABLE_PSP_STRIDE_HACK
+    cached_tex_v_scale = -1.0f;
+    tex_v_scale = 1.0f;
+#endif
     cached_tex_tpx = -1;
     cached_tex_tpy = -1;
     cached_tex_fmt = -1;

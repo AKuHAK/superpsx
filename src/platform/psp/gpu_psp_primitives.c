@@ -398,7 +398,11 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 p++;
                 uint32_t uv_clut = psx_cmd[p++];
                 dst[i].u = (float)Apply_Tex_Window_U(uv_clut & 0xFF);
+#ifdef ENABLE_PSP_STRIDE_HACK
+                dst[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF) * tex_v_scale;
+#else
                 dst[i].v = (float)Apply_Tex_Window_V((uv_clut >> 8) & 0xFF);
+#endif
                 dst[i].color = color; dst[i].x = x; dst[i].y = y; dst[i].z = 0;
             }
             vbatch.count += unique_nv;
@@ -508,10 +512,18 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                            sizeof(PspVertTex), 2);
             PspVertTex *v = &vbatch.v.tex[vbatch.count];
             v[0].u = (float)Apply_Tex_Window_U(u0);
+#ifdef ENABLE_PSP_STRIDE_HACK
+            v[0].v = (float)Apply_Tex_Window_V(v0) * tex_v_scale;
+#else
             v[0].v = (float)Apply_Tex_Window_V(v0);
+#endif
             v[0].color = color; v[0].x = x0;     v[0].y = y0;     v[0].z = 0;
             v[1].u = (float)Apply_Tex_Window_U(u0 + w);
+#ifdef ENABLE_PSP_STRIDE_HACK
+            v[1].v = (float)Apply_Tex_Window_V(v0 + h) * tex_v_scale;
+#else
             v[1].v = (float)Apply_Tex_Window_V(v0 + h);
+#endif
             v[1].color = color; v[1].x = x0 + w; v[1].y = y0 + h; v[1].z = 0;
             vbatch.count += 2;
             gpu_frame_stats.rect_tex++;

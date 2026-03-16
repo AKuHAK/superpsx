@@ -49,6 +49,11 @@ if(TARGET_PS2)
     option(ENABLE_MDEC_IPU "Use PS2 IPU hardware for MDEC IDCT+YUV→RGB" OFF)
 endif()
 
+# PSP-only options
+if(TARGET_PSP)
+    option(ENABLE_PSP_STRIDE_HACK "Zero-copy T4/T8 textures from EDRAM via stride trick" OFF)
+endif()
+
 # ============================================================================
 # Source files
 # ============================================================================
@@ -234,6 +239,10 @@ endif()
 
 if(ENABLE_MDEC_IPU)
     target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_MDEC_IPU)
+endif()
+
+if(ENABLE_PSP_STRIDE_HACK)
+    target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_PSP_STRIDE_HACK)
 endif()
 
 if(HEADLESS)

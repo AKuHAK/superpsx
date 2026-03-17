@@ -278,87 +278,62 @@ uint32_t gte_flag_vfpu = 0;
 
 void gte_mvmva_vfpu(R3000CPU *cpu, int lm, int mx, int v, int cv)
 {
-    /* Select and refresh matrix rows */
-    float *row1, *row2, *row3;
+    /* Integer MADD path (POPS-style): exact 44-bit math using mult/madd chains.
+     * float32 VFPU vtfm3.t loses precision for large values (24-bit mantissa).
+     * Games rarely care, but to pass the 1150 exact-match test suite we need
+     * integer arithmetic.  The VFPU matrix infrastructure is kept for potential
+     * future optimizations (batch projection, etc.). */
+
+    /* Get matrix elements */
+    int16_t m[3][3];
+    int base;
     switch (mx) {
-    case 0:
-        if (vfpu_rt_is_dirty(cpu)) vfpu_refresh_rt_matrix(cpu);
-        row1 = vfpu_rt_row1; row2 = vfpu_rt_row2; row3 = vfpu_rt_row3;
-        break;
-    case 1:
-        if (vfpu_lt_is_dirty(cpu)) vfpu_refresh_lt_matrix(cpu);
-        row1 = vfpu_lt_row1; row2 = vfpu_lt_row2; row3 = vfpu_lt_row3;
-        break;
-    default: /* mx=2: Color */
-        if (vfpu_lc_is_dirty(cpu)) vfpu_refresh_lc_matrix(cpu);
-        row1 = vfpu_lc_row1; row2 = vfpu_lc_row2; row3 = vfpu_lc_row3;
-        break;
+    case 0: base = 0; break;     /* RT: ctrl[0..4] */
+    case 1: base = 8; break;     /* LT: ctrl[8..12] */
+    default: base = 16; break;   /* LC: ctrl[16..20] */
+    }
+    m[0][0] = lo16v(C(base));       m[0][1] = hi16v(C(base));
+    m[0][2] = lo16v(C(base + 1));   m[1][0] = hi16v(C(base + 1));
+    m[1][1] = lo16v(C(base + 2));   m[1][2] = hi16v(C(base + 2));
+    m[2][0] = lo16v(C(base + 3));   m[2][1] = hi16v(C(base + 3));
+    m[2][2] = lo16v(C(base + 4));
+
+    /* Get translation (shifted by <<12 as per PSX GTE hardware) */
+    int64_t tx1, tx2, tx3;
+    if (cv == 3) {
+        tx1 = tx2 = tx3 = 0;
+    } else {
+        int tb;
+        switch (cv) {
+        case 0: tb = 5; break;   /* TR: ctrl[5..7] */
+        default: tb = 13; break; /* BK: ctrl[13..15] */
+        }
+        tx1 = (int64_t)(int32_t)C(tb)     << 12;
+        tx2 = (int64_t)(int32_t)C(tb + 1) << 12;
+        tx3 = (int64_t)(int32_t)C(tb + 2) << 12;
     }
 
-    /* Select and refresh translation */
-    float *trans;
-    switch (cv) {
-    case 0: /* TR */
-        if (mx != 0 && vfpu_rt_is_dirty(cpu)) vfpu_refresh_rt_matrix(cpu);
-        trans = vfpu_rt_trans;
-        break;
-    case 1: /* BK */
-        if (vfpu_bk_is_dirty(cpu)) vfpu_refresh_bk_trans(cpu);
-        trans = vfpu_bk_trans;
-        break;
-    default: /* None (cv=3) */
-        trans = vfpu_zero_trans;
-        break;
-    }
-
-    /* Get vertex as float */
+    /* Get vertex */
     int16_t vx = get_vector_vfpu(cpu, v, 0);
     int16_t vy = get_vector_vfpu(cpu, v, 1);
     int16_t vz = get_vector_vfpu(cpu, v, 2);
 
-    float vert[4] __attribute__((aligned(16)));
-    vert[0] = (float)vx;
-    vert[1] = (float)vy;
-    vert[2] = (float)vz;
-    vert[3] = 0.0f;
+    /* Integer multiply-accumulate (sf=1: shift >>12 at end) */
+    int64_t mac1 = tx1 + (int64_t)m[0][0] * vx + (int64_t)m[0][1] * vy + (int64_t)m[0][2] * vz;
+    int64_t mac2 = tx2 + (int64_t)m[1][0] * vx + (int64_t)m[1][1] * vy + (int64_t)m[1][2] * vz;
+    int64_t mac3 = tx3 + (int64_t)m[2][0] * vx + (int64_t)m[2][1] * vy + (int64_t)m[2][2] * vz;
 
-    float result[4] __attribute__((aligned(16)));
+    /* sf=1: shift >>12 (caller guarantees sf=1) */
+    int32_t r1 = (int32_t)(mac1 >> 12);
+    int32_t r2 = (int32_t)(mac2 >> 12);
+    int32_t r3 = (int32_t)(mac3 >> 12);
 
-    /* VFPU: result = matrix[3x3] x vertex + translation
-     *
-     * vtfm3.t computes result[i] = dot(Column_i(M000), Vector).
-     * We load GTE matrix ROWS into M000 columns so that vtfm3 reads
-     * the correct row elements for each dot product:
-     *   C000 = row1 = {r11/s, r12/s, r13/s}
-     *   C010 = row2 = {r21/s, r22/s, r23/s}
-     *   C020 = row3 = {r31/s, r32/s, r33/s}
-     * Then: result[0] = dot(C000, V) = r11*VX + r12*VY + r13*VZ = MAC1
-     */
-    __asm__ volatile (
-        "lv.q C000, 0(%[r1])\n"
-        "lv.q C010, 0(%[r2])\n"
-        "lv.q C020, 0(%[r3])\n"
-        "lv.q C100, 0(%[vt])\n"
-        "lv.q C200, 0(%[tr])\n"
-        "vtfm3.t C300, M000, C100\n"
-        "vadd.t C300, C300, C200\n"
-        "sv.q C300, 0(%[rs])\n"
-        :
-        : [r1] "r"(row1), [r2] "r"(row2), [r3] "r"(row3),
-          [vt] "r"(vert), [tr] "r"(trans), [rs] "r"(result)
-        : "memory"
-    );
-
-    int32_t mac1 = (int32_t)result[0];
-    int32_t mac2 = (int32_t)result[1];
-    int32_t mac3 = (int32_t)result[2];
-
-    D(vd_MAC1) = (uint32_t)mac1;
-    D(vd_MAC2) = (uint32_t)mac2;
-    D(vd_MAC3) = (uint32_t)mac3;
-    D(vd_IR1) = (uint32_t)vfpu_saturate_ir(mac1, 1, lm);
-    D(vd_IR2) = (uint32_t)vfpu_saturate_ir(mac2, 2, lm);
-    D(vd_IR3) = (uint32_t)vfpu_saturate_ir(mac3, 3, lm);
+    D(vd_MAC1) = (uint32_t)r1;
+    D(vd_MAC2) = (uint32_t)r2;
+    D(vd_MAC3) = (uint32_t)r3;
+    D(vd_IR1) = (uint32_t)vfpu_saturate_ir(r1, 1, lm);
+    D(vd_IR2) = (uint32_t)vfpu_saturate_ir(r2, 2, lm);
+    D(vd_IR3) = (uint32_t)vfpu_saturate_ir(r3, 3, lm);
 }
 
 /* ================================================================
@@ -370,34 +345,22 @@ void gte_mvmva_vfpu(R3000CPU *cpu, int lm, int mx, int v, int cv)
  * ================================================================ */
 void vfpu_rt_multiply(R3000CPU *cpu, int v, int32_t *out_mac1, int32_t *out_mac2, int32_t *out_mac3)
 {
+    /* Integer MADD: RT matrix × vertex + TR  (sf=1 → >>12) */
+    int16_t r11 = lo16v(C(vc_RT11RT12)), r12 = hi16v(C(vc_RT11RT12));
+    int16_t r13 = lo16v(C(vc_RT13RT21)), r21 = hi16v(C(vc_RT13RT21));
+    int16_t r22 = lo16v(C(vc_RT22RT23)), r23 = hi16v(C(vc_RT22RT23));
+    int16_t r31 = lo16v(C(vc_RT31RT32)), r32 = hi16v(C(vc_RT31RT32));
+    int16_t r33 = lo16v(C(vc_RT33));
+
+    int64_t tx = (int64_t)(int32_t)C(vc_TRX) << 12;
+    int64_t ty = (int64_t)(int32_t)C(vc_TRY) << 12;
+    int64_t tz = (int64_t)(int32_t)C(vc_TRZ) << 12;
+
     int16_t vx = get_vector_vfpu(cpu, v, 0);
     int16_t vy = get_vector_vfpu(cpu, v, 1);
     int16_t vz = get_vector_vfpu(cpu, v, 2);
 
-    float vert[4] __attribute__((aligned(16)));
-    vert[0] = (float)vx;
-    vert[1] = (float)vy;
-    vert[2] = (float)vz;
-    vert[3] = 0.0f;
-
-    float result[4] __attribute__((aligned(16)));
-
-    __asm__ volatile (
-        "lv.q C000, 0(%[r1])\n"
-        "lv.q C010, 0(%[r2])\n"
-        "lv.q C020, 0(%[r3])\n"
-        "lv.q C100, 0(%[vt])\n"
-        "lv.q C200, 0(%[tr])\n"
-        "vtfm3.t C300, M000, C100\n"
-        "vadd.t C300, C300, C200\n"
-        "sv.q C300, 0(%[rs])\n"
-        :
-        : [r1] "r"(vfpu_rt_row1), [r2] "r"(vfpu_rt_row2), [r3] "r"(vfpu_rt_row3),
-          [vt] "r"(vert), [tr] "r"(vfpu_rt_trans), [rs] "r"(result)
-        : "memory"
-    );
-
-    *out_mac1 = (int32_t)result[0];
-    *out_mac2 = (int32_t)result[1];
-    *out_mac3 = (int32_t)result[2];
+    *out_mac1 = (int32_t)((tx + (int64_t)r11 * vx + (int64_t)r12 * vy + (int64_t)r13 * vz) >> 12);
+    *out_mac2 = (int32_t)((ty + (int64_t)r21 * vx + (int64_t)r22 * vy + (int64_t)r23 * vz) >> 12);
+    *out_mac3 = (int32_t)((tz + (int64_t)r31 * vx + (int64_t)r32 * vy + (int64_t)r33 * vz) >> 12);
 }

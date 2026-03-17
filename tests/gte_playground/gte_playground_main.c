@@ -25,6 +25,7 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 
 #include "superpsx.h"
 #include "config.h"
+#include "test_all_data.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -510,6 +511,150 @@ static void test_fuzz_full_cmds(void)
 }
 
 /* ================================================================
+ * Test: all 1150 test cases from ps1-tests/gte/test-all
+ *
+ * For each test: load input regs into cpu_c and cpu_v,
+ * run C path on cpu_c, VFPU/fast path on cpu_v, compare
+ * all 64 output registers with tolerance.
+ * ================================================================ */
+
+/* Write all 64 GTE registers (0-31=data, 32-63=ctrl) */
+static void load_all_regs(R3000CPU *cpu, const uint32_t input[64])
+{
+    for (int i = 0; i < 32; i++)
+        GTE_WriteData(cpu, i, input[i]);
+    for (int i = 0; i < 32; i++)
+        GTE_WriteCtrl(cpu, i, input[32 + i]);
+}
+
+/* Read all 64 GTE registers */
+static void read_all_regs(R3000CPU *cpu, uint32_t output[64])
+{
+    for (int i = 0; i < 32; i++)
+        output[i] = GTE_ReadData(cpu, i);
+    for (int i = 0; i < 32; i++)
+        output[32 + i] = GTE_ReadCtrl(cpu, i);
+}
+
+/* GTE register names for diagnostics */
+static const char *gte_reg_name(int r)
+{
+    static const char *data_names[] = {
+        "VXY0","VZ0","VXY1","VZ1","VXY2","VZ2","RGBC","OTZ",
+        "IR0","IR1","IR2","IR3","SXY0","SXY1","SXY2","SXYP",
+        "SZ0","SZ1","SZ2","SZ3","RGB0","RGB1","RGB2","RES1",
+        "MAC0","MAC1","MAC2","MAC3","IRGB","ORGB","LZCS","LZCR"
+    };
+    static const char *ctrl_names[] = {
+        "RT11RT12","RT13RT21","RT22RT23","RT31RT32","RT33",
+        "TRX","TRY","TRZ","L11L12","L13L21","L22L23","L31L32","L33",
+        "RBK","GBK","BBK","LR1LR2","LR3LG1","LG2LG3","LB1LB2","LB3",
+        "RFC","GFC","BFC","OFX","OFY","H","DQA","DQB",
+        "ZSF3","ZSF4","FLAG"
+    };
+    static char buf[16];
+    if (r < 32)
+        return data_names[r];
+    else if (r - 32 < 31)
+        return ctrl_names[r - 32];
+    snprintf(buf, sizeof(buf), "r%d", r);
+    return buf;
+}
+
+/* Per-register tolerance: most regs ±1, FLAG ignored, MAC0 ±2 */
+static int reg_tolerance(int r)
+{
+    if (r == 63) return -1;   /* FLAG (ctrl 31): skip comparison */
+    if (r == 24) return 2;    /* MAC0: FPU rounding */
+    if (r == 14) return 2;    /* SXY1: projection rounding */
+    if (r == 15) return 2;    /* SXY2/SXYP: projection rounding */
+    return TOLERANCE;         /* default ±1 */
+}
+
+static void test_all_comparison(void)
+{
+    printf("=== test-all: 1150 tests (C vs VFPU) ===\n");
+
+    int ta_pass = 0, ta_fail = 0, ta_tolerated = 0;
+    int ta_c_exact = 0;  /* C path matches expected output exactly */
+    int ta_max_delta = 0;
+
+    for (int t = 0; t < TEST_COUNT; t++) {
+        const struct test_t *tc = &tests[t];
+
+        /* Load identical state into both CPUs */
+        memset(&cpu_c, 0, sizeof(cpu_c));
+        memset(&cpu_v, 0, sizeof(cpu_v));
+        load_all_regs(&cpu_c, tc->input);
+        load_all_regs(&cpu_v, tc->input);
+
+        /* Execute op (if any) */
+        if (tc->opcode != 0xffffffff) {
+            gte_use_vfpu = 0;
+            GTE_Execute(tc->opcode, &cpu_c);
+
+            gte_use_vfpu = 1;
+            GTE_Execute(tc->opcode, &cpu_v);
+        }
+
+        /* Read back all registers */
+        uint32_t out_c[64], out_v[64];
+        read_all_regs(&cpu_c, out_c);
+        read_all_regs(&cpu_v, out_v);
+
+        /* Sanity: check C path vs expected output */
+        int c_exact = 1;
+        for (int r = 0; r < 64; r++) {
+            if (out_c[r] != tc->output[r]) { c_exact = 0; break; }
+        }
+        if (c_exact) ta_c_exact++;
+
+        /* Compare C vs VFPU */
+        int test_max = 0;
+        int test_fail = 0;
+        int worst_reg = -1;
+        for (int r = 0; r < 64; r++) {
+            int tol = reg_tolerance(r);
+            if (tol < 0) continue; /* skip this register */
+
+            int32_t diff = (int32_t)(out_v[r] - out_c[r]);
+            int adiff = diff < 0 ? -diff : diff;
+            if (adiff > test_max) { test_max = adiff; worst_reg = r; }
+            if (adiff > tol) test_fail = 1;
+        }
+
+        if (test_fail) {
+            ta_fail++;
+            /* One-line summary for each failing test */
+            printf("  FAIL %s (op=0x%08lx) worst=r%d(%s) delta=%d C=0x%08lx V=0x%08lx\n",
+                   tc->name, (unsigned long)tc->opcode,
+                   worst_reg, gte_reg_name(worst_reg),
+                   test_max,
+                   (unsigned long)out_c[worst_reg],
+                   (unsigned long)out_v[worst_reg]);
+        } else if (test_max > 0) {
+            ta_pass++;
+            ta_tolerated++;
+        } else {
+            ta_pass++;
+        }
+        if (test_max > ta_max_delta) ta_max_delta = test_max;
+    }
+
+    total_tests += ta_pass + ta_fail;
+    total_pass += ta_pass;
+    total_fail += ta_fail;
+    total_tolerated += ta_tolerated;
+    if (ta_max_delta > max_delta_seen) max_delta_seen = ta_max_delta;
+
+    printf("  C matches expected: %d/%d\n", ta_c_exact, TEST_COUNT);
+    printf("  C vs VFPU: %d/%d passed", ta_pass, ta_pass + ta_fail);
+    if (ta_fail > 0) printf(", %d FAILED", ta_fail);
+    if (ta_tolerated > 0) printf(", %d tolerated", ta_tolerated);
+    printf(", max_delta=%d\n", ta_max_delta);
+}
+
+/* ================================================================
  * Main entry point
  * ================================================================ */
 
@@ -541,6 +686,7 @@ int main(void)
     test_fuzz_mvmva();
     test_fuzz_mvmva_extreme();
     test_fuzz_full_cmds();
+    test_all_comparison();
 
     printf("\n========================================\n");
     printf("Results: %d/%d passed", total_pass, total_tests);

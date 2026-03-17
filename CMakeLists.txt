@@ -512,6 +512,7 @@ endif()
 if(TARGET_PSP)
 set(GTE_PLAYGROUND_SOURCES
     tests/gte_playground/gte_playground_main.c
+    tests/gte_playground/test_all_data.c
     src/gte.c
     src/platform/psp/gte_vfpu.c
 )
@@ -522,6 +523,7 @@ target_include_directories(gte_playground.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/src/platform/psp
+    ${CMAKE_SOURCE_DIR}/tests/gte_playground
 )
 
 target_compile_options(gte_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)

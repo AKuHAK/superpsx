@@ -24,6 +24,7 @@ test.exe
 tests/*
 !tests/jit/
 !tests/playground_gpu/
+!tests/gte_playground/
 isos/*
 !isos/.keepme
 

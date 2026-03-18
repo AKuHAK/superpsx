@@ -57,16 +57,15 @@ static uint32_t clut_fast_hash(const uint16_t *src, int count)
 }
 
 /* Quick scan: does the CLUT need STP fixup?
- * Returns 0 if all non-zero entries already have STP=1 (bit 15)
- * and no entry is exactly 0x8000 (black+STP needs color tweak).
- * When 0, the raw VRAM data can be used directly (zero-copy). */
+ * Returns 0 if all non-zero entries already have STP=1 (bit 15).
+ * When 0, the raw VRAM data can be used directly (zero-copy).
+ * With alpha test (not color test), 0x8000 is fine — alpha=1 passes. */
 static int clut_needs_fixup(const uint16_t *src, int count)
 {
     for (int i = 0; i < count; i++) {
         uint16_t c = src[i];
         if (c == 0) continue;
         if (!(c & 0x8000)) return 1;     /* non-zero, missing STP */
-        if ((c & 0x7FFF) == 0) return 1;  /* 0x8000: needs color tweak */
     }
     return 0;
 }
@@ -202,9 +201,7 @@ static void setup_psx_texture(uint32_t clut_word)
                     for (int i = 0; i < 16; i++) {
                         uint16_t c = csrc[i];
                         if (c == 0) { cd[i] = 0; continue; }
-                        c |= 0x8000;
-                        if ((c & 0x7FFF) == 0) c |= 0x0001;
-                        cd[i] = c;
+                        cd[i] = c | 0x8000;
                     }
                 }
                 sceKernelDcacheWritebackRange(cd, 32);
@@ -289,9 +286,7 @@ static void setup_psx_texture(uint32_t clut_word)
                     for (int i = 0; i < 256; i++) {
                         uint16_t c = csrc[i];
                         if (c == 0) { cd[i] = 0; continue; }
-                        c |= 0x8000;
-                        if ((c & 0x7FFF) == 0) c |= 0x0001;
-                        cd[i] = c;
+                        cd[i] = c | 0x8000;
                     }
                 }
                 sceKernelDcacheWritebackRange(cd, 512);

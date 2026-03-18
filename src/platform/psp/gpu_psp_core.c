@@ -238,6 +238,8 @@ void GPU_Backend_UpdateDisplay(void)
     sceGuDisable(GU_DEPTH_TEST);
     sceGuDisable(GU_BLEND);
     sceGuDisable(GU_STENCIL_TEST);
+    sceGuDisable(GU_ALPHA_TEST);
+    sceGuDisable(GU_COLOR_TEST);
 
     /* Black letterbox borders */
     sceGuClearColor(0xFF000000);

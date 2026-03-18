@@ -75,21 +75,27 @@ static void vbatch_flush(void)
     void *vdst = vpool_alloc(vbytes);
     memcpy(vdst, &vbatch.v, vbytes);
 
+    void *idst = NULL;
+    int ibytes = 0;
+    if (vbatch.icount > 0) {
+        ibytes = vbatch.icount * sizeof(uint16_t);
+        idst = vpool_alloc(ibytes);
+        memcpy(idst, vbatch.idx, ibytes);
+    }
+
     if (vbatch.full_scissor)
         sceGuScissor(0, 0, 1024, 512);
 
-    if (vbatch.icount > 0) {
-        /* Indexed draw: quads decomposed via index buffer */
-        int ibytes = vbatch.icount * sizeof(uint16_t);
-        void *idst = vpool_alloc(ibytes);
-        memcpy(idst, vbatch.idx, ibytes);
+    if (idst) {
         sceGuDrawArray(vbatch.prim,
                        vbatch.vfmt | GU_INDEX_16BIT | GU_TRANSFORM_2D,
-                       vbatch.icount, (void *)((uintptr_t)idst | 0x40000000),
+                       vbatch.icount,
+                       (void *)((uintptr_t)idst | 0x40000000),
                        (void *)((uintptr_t)vdst | 0x40000000));
     } else {
         sceGuDrawArray(vbatch.prim, vbatch.vfmt | GU_TRANSFORM_2D,
-                       vbatch.count, NULL, (void *)((uintptr_t)vdst | 0x40000000));
+                       vbatch.count, NULL,
+                       (void *)((uintptr_t)vdst | 0x40000000));
     }
 
     if (vbatch.full_scissor)
@@ -150,7 +156,7 @@ static int cached_blend_on = -1;   /* 0=off, 1=on */
 static int cached_blend_mode = -1; /* semi_trans_mode 0-3 */
 static int cached_dither_on = -1;  /* 0=off, 1=on */
 static int cached_tex_on = -1;     /* 0=off, 1=on */
-static int cached_color_test_on = -1;
+static int cached_alpha_test_on = -1; /* 0=off, 1=alpha test, 2=color test */
 
 static void apply_dither(int is_shaded, int is_textured, int is_raw_tex)
 {
@@ -176,8 +182,8 @@ static void apply_blend(int is_semi_trans)
             vbatch_flush();
             switch (semi_trans_mode)
             {
-            case 0:
-                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x80808080, 0x80808080);
+            case 0: /* 0.5B + 0.5F — POPS uses 0x7F (≈50%) */
+                sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0x7F7F7F7F, 0x7F7F7F7F);
                 break;
             case 1:
                 sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
@@ -222,20 +228,45 @@ static inline void gu_disable_texture(void)
 
 static inline void gu_enable_color_test(void)
 {
-    if (cached_color_test_on != 1) {
+    /* CLUT'd textures (T4/T8): all non-zero entries get STP=1 (alpha=0xFF),
+     * so alpha test NEQUAL 0x00 rejects only fully transparent (0x0000).
+     * This correctly passes 0x8000 (black+STP) without needing a +1 hack.
+     *
+     * Direct 15bpp (T16): pixels keep original STP bits from VRAM.
+     * Many valid texels may have STP=0 (alpha=0x00), so use color test
+     * (RGB != 0) to reject only truly transparent pixels. */
+    int want = (tex_page_format < 2) ? 1 : 2; /* 1=alpha, 2=color */
+    if (cached_alpha_test_on != want) {
         vbatch_flush();
-        sceGuEnable(GU_COLOR_TEST);
-        sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
-        cached_color_test_on = 1;
+        /* Disable whichever test is currently active (or both if unknown) */
+        if (cached_alpha_test_on == 1) sceGuDisable(GU_ALPHA_TEST);
+        else if (cached_alpha_test_on == 2) sceGuDisable(GU_COLOR_TEST);
+        else if (cached_alpha_test_on == -1) {
+            sceGuDisable(GU_ALPHA_TEST);
+            sceGuDisable(GU_COLOR_TEST);
+        }
+        if (want == 1) {
+            sceGuEnable(GU_ALPHA_TEST);
+            sceGuAlphaFunc(GU_NOTEQUAL, 0x00, 0xFF);
+        } else {
+            sceGuEnable(GU_COLOR_TEST);
+            sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
+        }
+        cached_alpha_test_on = want;
     }
 }
 
 static inline void gu_disable_color_test(void)
 {
-    if (cached_color_test_on != 0) {
+    if (cached_alpha_test_on != 0) {
         vbatch_flush();
-        sceGuDisable(GU_COLOR_TEST);
-        cached_color_test_on = 0;
+        if (cached_alpha_test_on == 1) sceGuDisable(GU_ALPHA_TEST);
+        else if (cached_alpha_test_on == 2) sceGuDisable(GU_COLOR_TEST);
+        else if (cached_alpha_test_on == -1) {
+            sceGuDisable(GU_ALPHA_TEST);
+            sceGuDisable(GU_COLOR_TEST);
+        }
+        cached_alpha_test_on = 0;
     }
 }
 
@@ -247,7 +278,7 @@ void Prim_InvalidateGSState(void)
     cached_blend_mode = -1;
     cached_dither_on = -1;
     cached_tex_on = -1;
-    cached_color_test_on = -1;
+    cached_alpha_test_on = -1;
     Tex_InvalidateState();
 }
 
@@ -359,8 +390,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
         else
         {
             gu_enable_texture();
-            gu_enable_color_test();
-            /* Extract texpage from vertex 1's UV word */
+            /* Extract texpage from vertex 1's UV word (before color test,
+             * which needs tex_page_format to choose alpha vs color test) */
             {
                 int tpage_idx = is_shaded ? 5 : 4;
                 uint32_t tpage = psx_cmd[tpage_idx] >> 16;
@@ -369,6 +400,7 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 tex_page_format = (tpage >> 7) & 3;
                 semi_trans_mode = (tpage >> 5) & 3;
             }
+            gu_enable_color_test();
             int clut_src_p = 2;
             uint32_t clut_word = psx_cmd[clut_src_p] & 0xFFFF0000;
             Tex_SetupIfChanged(clut_word);
@@ -379,8 +411,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             int unique_nv = nv;
             int nidx = is_quad ? 6 : 3;
             vbatch_prepare_idx(GU_TRIANGLES,
-                               GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
-                               sizeof(PspVertTex), unique_nv, nidx);
+                           GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                           sizeof(PspVertTex), unique_nv, nidx);
 
             uint16_t base = (uint16_t)vbatch.count;
             PspVertTex *dst = &vbatch.v.tex[vbatch.count];
@@ -508,8 +540,8 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
                 Tex_ApplyFuncReplace();
 
             vbatch_prepare(GU_SPRITES,
-                           GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
-                           sizeof(PspVertTex), 2);
+                       GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                       sizeof(PspVertTex), 2);
             PspVertTex *v = &vbatch.v.tex[vbatch.count];
             v[0].u = (float)Apply_Tex_Window_U(u0);
 #ifdef ENABLE_PSP_STRIDE_HACK

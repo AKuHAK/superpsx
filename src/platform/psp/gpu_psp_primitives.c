@@ -4,6 +4,7 @@
  * Texture cache is in gpu_psp_texture.c.
  */
 #include "gpu_state.h"
+#include "gpu_backend.h"
 #include "gpu_psp_state.h"
 #include "profiler.h"
 #include <pspgu.h>
@@ -64,7 +65,34 @@ static struct {
     int vfmt;    /* GU format flags (without GU_TRANSFORM_2D) */
     int prim;    /* GU_TRIANGLES, GU_LINES, GU_SPRITES */
     int full_scissor; /* 1 = full VRAM scissor (FillRect), 0 = draw area */
+    int stp_two_pass; /* 1 = textured semi-trans T4/T8: alpha-based 2-pass */
 } vbatch;
+
+/* Lazy GU state cache — avoid redundant sceGu calls.
+ * Reset to -1 (unknown) by Prim_InvalidateGSState().
+ * Each helper flushes the batch when it actually emits a GU command,
+ * ensuring all batched verts are drawn with the correct prior state. */
+static int cached_blend_on = -1;   /* 0=off, 1=on */
+static int cached_blend_mode = -1; /* semi_trans_mode 0-3 */
+static int cached_dither_on = -1;  /* 0=off, 1=on */
+static int cached_tex_on = -1;     /* 0=off, 1=on */
+static int cached_alpha_test_on = -1; /* 0=off, 1=alpha test(T4/T8), 2=color test(T16) */
+
+static inline void vbatch_draw(int prim, int vfmt, int count, int icount,
+                               void *vdst, void *idst)
+{
+    if (idst) {
+        sceGuDrawArray(prim,
+                       vfmt | GU_INDEX_16BIT | GU_TRANSFORM_2D,
+                       icount,
+                       (void *)((uintptr_t)idst | 0x40000000),
+                       (void *)((uintptr_t)vdst | 0x40000000));
+    } else {
+        sceGuDrawArray(prim, vfmt | GU_TRANSFORM_2D,
+                       count, NULL,
+                       (void *)((uintptr_t)vdst | 0x40000000));
+    }
+}
 
 static void vbatch_flush(void)
 {
@@ -86,16 +114,52 @@ static void vbatch_flush(void)
     if (vbatch.full_scissor)
         sceGuScissor(0, 0, 1024, 512);
 
-    if (idst) {
-        sceGuDrawArray(vbatch.prim,
-                       vbatch.vfmt | GU_INDEX_16BIT | GU_TRANSFORM_2D,
-                       vbatch.icount,
-                       (void *)((uintptr_t)idst | 0x40000000),
-                       (void *)((uintptr_t)vdst | 0x40000000));
+    if (vbatch.stp_two_pass) {
+        /* Stencil-based STP 3-pass for textured semi-transparent T4/T8.
+         *
+         * CLUT 8888 alpha: 0x00=transparent, 0x80=STP0, 0xFF=STP1.
+         * After modulate: 0x00, 0x7F, 0xFE.
+         *
+         * Pass 1: blend STP=1 + mark stencil (background still original)
+         * Pass 2: draw STP=0 opaque (stencil skips STP=1 areas)
+         * Pass 3: clear stencil marks
+         */
+
+        /* Pass 1: blend STP=1 texels + mark stencil */
+        sceGuEnable(GU_STENCIL_TEST);
+        sceGuStencilFunc(GU_ALWAYS, 0xFF, 0xFF);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_REPLACE);
+        sceGuEnable(GU_ALPHA_TEST);
+        sceGuAlphaFunc(GU_GEQUAL, 0xC0, 0xFF);
+        sceGuEnable(GU_BLEND);
+        vbatch_draw(vbatch.prim, vbatch.vfmt, vbatch.count, vbatch.icount,
+                    vdst, idst);
+
+        /* Pass 2: draw STP=0 texels opaque (skip stencil-marked STP=1) */
+        sceGuStencilFunc(GU_NOTEQUAL, 0xFF, 0xFF);
+        sceGuStencilOp(GU_KEEP, GU_KEEP, GU_KEEP);
+        sceGuAlphaFunc(GU_GEQUAL, 0x40, 0xFF);
+        sceGuDisable(GU_BLEND);
+        vbatch_draw(vbatch.prim, vbatch.vfmt, vbatch.count, vbatch.icount,
+                    vdst, idst);
+
+        /* Pass 3: stencil cleanup (no color write) */
+        sceGuStencilFunc(GU_NEVER, 0x00, 0xFF);
+        sceGuStencilOp(GU_REPLACE, GU_KEEP, GU_KEEP);
+        vbatch_draw(vbatch.prim, vbatch.vfmt, vbatch.count, vbatch.icount,
+                    vdst, idst);
+
+        /* Restore stencil state */
+        if (mask_set_bit || mask_check_bit)
+            GPU_Backend_SetMaskBit(mask_set_bit, mask_check_bit);
+        else
+            sceGuDisable(GU_STENCIL_TEST);
+        sceGuDisable(GU_ALPHA_TEST);
+        cached_alpha_test_on = 0;
+        cached_blend_on = 0;
     } else {
-        sceGuDrawArray(vbatch.prim, vbatch.vfmt | GU_TRANSFORM_2D,
-                       vbatch.count, NULL,
-                       (void *)((uintptr_t)vdst | 0x40000000));
+        vbatch_draw(vbatch.prim, vbatch.vfmt, vbatch.count, vbatch.icount,
+                    vdst, idst);
     }
 
     if (vbatch.full_scissor)
@@ -106,6 +170,7 @@ static void vbatch_flush(void)
     vbatch.count = 0;
     vbatch.icount = 0;
     vbatch.full_scissor = 0;
+    vbatch.stp_two_pass = 0;
 }
 
 /* Ensure batch is compatible; flush if not.
@@ -115,7 +180,7 @@ static inline void vbatch_prepare_idx(int prim, int vfmt, int vsize,
 {
     if (vbatch.count > 0 &&
         (vbatch.prim != prim || vbatch.vfmt != vfmt ||
-         vbatch.full_scissor != 0 ||
+         vbatch.full_scissor != 0 || vbatch.stp_two_pass != 0 ||
          vbatch.count + nverts > VBATCH_MAX ||
          vbatch.icount + nidx > IBATCH_MAX))
         vbatch_flush();
@@ -129,6 +194,26 @@ static inline void vbatch_prepare(int prim, int vfmt, int vsize, int nverts)
     vbatch_prepare_idx(prim, vfmt, vsize, nverts, 0);
 }
 
+/* Prepare batch for textured semi-transparent T4/T8: alpha-based STP two-pass.
+ * Always flush first — never batch multiple STP prims together, because
+ * the 2-pass (Pass1=all opaque, Pass2=all blend) would break polygon
+ * draw order for overlapping primitives (painter's algorithm). */
+static inline void vbatch_prepare_idx_stp(int prim, int vfmt, int vsize,
+                                          int nverts, int nidx)
+{
+    if (vbatch.count > 0)
+        vbatch_flush();
+    vbatch.prim = prim;
+    vbatch.vfmt = vfmt;
+    vbatch.vsize = vsize;
+    vbatch.stp_two_pass = 1;
+}
+
+static inline void vbatch_prepare_stp(int prim, int vfmt, int vsize, int nverts)
+{
+    vbatch_prepare_idx_stp(prim, vfmt, vsize, nverts, 0);
+}
+
 /* Prepare for FillRect sprites (full VRAM scissor). */
 static inline void vbatch_prepare_fill(int nverts)
 {
@@ -137,7 +222,7 @@ static inline void vbatch_prepare_fill(int nverts)
     int vsize = (int)sizeof(PspVertFlat);
     if (vbatch.count > 0 &&
         (vbatch.prim != prim || vbatch.vfmt != vfmt ||
-         vbatch.full_scissor != 1 ||
+         vbatch.full_scissor != 1 || vbatch.stp_two_pass != 0 ||
          vbatch.count + nverts > VBATCH_MAX))
         vbatch_flush();
     vbatch.prim = prim;
@@ -147,16 +232,6 @@ static inline void vbatch_prepare_fill(int nverts)
 }
 
 void Prim_FlushBatch(void) { vbatch_flush(); }
-
-/* Lazy GU state cache — avoid redundant sceGu calls.
- * Reset to -1 (unknown) by Prim_InvalidateGSState().
- * Each helper flushes the batch when it actually emits a GU command,
- * ensuring all batched verts are drawn with the correct prior state. */
-static int cached_blend_on = -1;   /* 0=off, 1=on */
-static int cached_blend_mode = -1; /* semi_trans_mode 0-3 */
-static int cached_dither_on = -1;  /* 0=off, 1=on */
-static int cached_tex_on = -1;     /* 0=off, 1=on */
-static int cached_alpha_test_on = -1; /* 0=off, 1=alpha test, 2=color test */
 
 static void apply_dither(int is_shaded, int is_textured, int is_raw_tex)
 {
@@ -228,9 +303,10 @@ static inline void gu_disable_texture(void)
 
 static inline void gu_enable_color_test(void)
 {
-    /* CLUT'd textures (T4/T8): all non-zero entries get STP=1 (alpha=0xFF),
-     * so alpha test NEQUAL 0x00 rejects only fully transparent (0x0000).
-     * This correctly passes 0x8000 (black+STP) without needing a +1 hack.
+    /* CLUT'd textures (T4/T8): 8888 CLUT encodes STP in alpha:
+     *   0x0000 → alpha=0x00, STP=0 non-zero → alpha=0x80, STP=1 → alpha=0xFF.
+     * After TFX_MODULATE: 0x80*0xFF>>8=0x7F, 0xFF*0xFF>>8=0xFE.
+     * Alpha test GEQUAL 0x40 passes both STP=0 and STP=1, blocks transparent.
      *
      * Direct 15bpp (T16): pixels keep original STP bits from VRAM.
      * Many valid texels may have STP=0 (alpha=0x00), so use color test
@@ -247,7 +323,7 @@ static inline void gu_enable_color_test(void)
         }
         if (want == 1) {
             sceGuEnable(GU_ALPHA_TEST);
-            sceGuAlphaFunc(GU_NOTEQUAL, 0x00, 0xFF);
+            sceGuAlphaFunc(GU_GEQUAL, 0x40, 0xFF);
         } else {
             sceGuEnable(GU_COLOR_TEST);
             sceGuColorFunc(GU_NOTEQUAL, 0x00000000, 0x00FFFFFF);
@@ -410,7 +486,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
 
             int unique_nv = nv;
             int nidx = is_quad ? 6 : 3;
-            vbatch_prepare_idx(GU_TRIANGLES,
+            if (is_semi && tex_page_format < 2)
+                vbatch_prepare_idx_stp(GU_TRIANGLES,
+                           GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                           sizeof(PspVertTex), unique_nv, nidx);
+            else
+                vbatch_prepare_idx(GU_TRIANGLES,
                            GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
                            sizeof(PspVertTex), unique_nv, nidx);
 
@@ -539,7 +620,12 @@ int Translate_GP0_to_GS(uint32_t *psx_cmd)
             if (is_raw_rect)
                 Tex_ApplyFuncReplace();
 
-            vbatch_prepare(GU_SPRITES,
+            if (is_semi && tex_page_format < 2)
+                vbatch_prepare_stp(GU_SPRITES,
+                       GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
+                       sizeof(PspVertTex), 2);
+            else
+                vbatch_prepare(GU_SPRITES,
                        GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_16BIT,
                        sizeof(PspVertTex), 2);
             PspVertTex *v = &vbatch.v.tex[vbatch.count];

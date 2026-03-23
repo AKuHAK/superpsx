@@ -862,9 +862,8 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
          * I_STAT (0x1F801070): cpu.i_stat &= data (acknowledge IRQs)
          * I_MASK (0x1F801074): cpu.i_mask = data & 0xFFFF07FF
          *
-         * The SIO_CheckIRQ side effect for I_STAT writes is handled by
-         * sio_irq_delay_cycle in the dynarec loop, so we can safely
-         * inline the acknowledge-only logic here.
+         * SIO IRQ is now fired immediately in sio_assert_ack(), so
+         * we can safely inline the acknowledge-only logic here.
          */
         if (phys == 0x1F801070 && size == 4) /* I_STAT */
         {
@@ -923,7 +922,14 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                     EMIT_MOVE(REG_A1, data_reg);
             }
             emit_flush_partial_cycles();
+            /* Store cpu.current_pc so SIO_Write can set psx_abort_pc */
+            emit_load_imm32(REG_AT, emit_current_psx_pc);
+            EMIT_SW(REG_AT, CPU_CURRENT_PC, REG_S0);
             emit_call_c_lite((uint32_t)SIO_Write);
+            /* Reload S2 from cpu.cycles_left: memcard ACK caps it for
+             * accurate SIO IRQ timing (cycles_left_correction tracks
+             * the adjustment so run_jit_chain doesn't overcount). */
+            EMIT_LW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
 
             /* @done: patch fast-path branch */
             int32_t doff = (int32_t)(code_ptr - sio_fast_done - 1);
@@ -944,7 +950,12 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                     EMIT_MOVE(REG_A1, data_reg);
             }
             emit_flush_partial_cycles();
+            /* Store cpu.current_pc so SIO_Write can set psx_abort_pc */
+            emit_load_imm32(REG_AT, emit_current_psx_pc);
+            EMIT_SW(REG_AT, CPU_CURRENT_PC, REG_S0);
             emit_call_c_lite((uint32_t)SIO_Write);
+            /* Reload S2: memcard ACK may cap cycles_left for accurate timing. */
+            EMIT_LW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
             return;
         }
     }

@@ -1570,7 +1570,8 @@ uint32_t *compile_block(uint32_t psx_pc)
         cur_pc += 4;
         total_instructions++;
 
-        if ((cur_pc - sub_block_start_pc) >= 256 || (cur_pc - psx_pc) >= (MAX_SUPER_INSNS * 4))
+        if ((cur_pc - sub_block_start_pc) >= 256 || (cur_pc - psx_pc) >= (MAX_SUPER_INSNS * 4)
+        )
         {
             if (pending_load_reg != 0)
             {

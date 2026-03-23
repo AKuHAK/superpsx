@@ -14,6 +14,7 @@ extern int sio_state;
 extern int sio_response_len;
 extern int sio_selected;
 extern int sio_irq_pending;
+extern int sio_ack_latch;
 extern volatile uint64_t sio_irq_delay_cycle;
 
 #endif

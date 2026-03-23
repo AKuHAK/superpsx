@@ -13,6 +13,7 @@
 #include "iso_fs.h"
 #include "osd.h"
 #include "mdec.h"
+#include "memorycard.h"
 
 /* Provided by the platform-specific main_*.c */
 extern char psx_exe_filename_buf[];
@@ -53,6 +54,7 @@ void Init_SuperPSX(void)
     Init_Interrupts();
     CDROM_Init();
     MDEC_Init();
+    MCD_Init();
 
     /* If host provided PSX arguments, write them into scratchpad now. */
     if (psx_host_argc > 0 && psx_host_args)

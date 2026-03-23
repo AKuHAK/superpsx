@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "joystick.h"
 #include "psx_sio.h"
+#include "memorycard.h"
 #include "profiler.h"
 
 #define LOG_TAG "SIO"
@@ -22,28 +23,49 @@ static uint8_t sio_response[20]; /* Pre-built response buffer */
 int sio_response_len = 0;        /* Number of valid bytes in sio_response */
 int sio_selected = 0;            /* 1 = JOY SELECT is asserted */
 static int sio_port = 0;         /* 0 = PSX port 1, 1 = PSX port 2 */
+static int sio_device = 0;       /* 0=none, 1=pad, 2=memcard */
 
 /* SIO Serial Port (0x1F801050-0x1F80105E) */
 static uint16_t serial_mode = 0;
 static uint16_t serial_ctrl = 0;
 static uint16_t serial_baud = 0;
 
-#define SIO_IRQ_DELAY 500
+#define SIO_IRQ_DELAY     500   /* Pad IRQ delay */
+#define SIO_MCD_IRQ_DELAY 1500  /* Memcard IRQ delay (longer — BIOS needs time) */
 volatile uint64_t sio_irq_delay_cycle = 0;
 int sio_irq_pending = 0;
+int sio_ack_latch = 0;          /* 1 = ACK pulse ready, consumed on STAT read */
 
 /* ---- Scheduler-driven SIO IRQ delay ---- */
 static void Sched_SIO_IRQ_Callback(void)
 {
     sio_irq_delay_cycle = 0;
+    sio_irq_pending = 0;    /* IRQ delivered — no longer pending */
+    sio_stat |= (1 << 9);   /* Latch IRQ flag — BIOS checks this to confirm SIO source */
     SignalInterrupt(7);
 }
 
 static inline void sio_schedule_irq(void)
 {
-    uint64_t deadline = global_cycles + SIO_IRQ_DELAY;
+    uint64_t deadline = global_cycles + partial_block_cycles + SIO_IRQ_DELAY;
     sio_irq_delay_cycle = deadline;
     Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
+}
+
+/* Assert ACK: set latch + schedule IRQ with device-appropriate delay */
+static inline void sio_assert_ack(void)
+{
+    sio_ack_latch = 1;
+    if (sio_device == 2) {
+        /* Memcard: longer delay, NO sio_irq_pending (no block_aborted) */
+        uint64_t deadline = global_cycles + partial_block_cycles + SIO_MCD_IRQ_DELAY;
+        sio_irq_delay_cycle = deadline;
+        Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
+    } else {
+        /* Pad: shorter delay + irq_pending for ack4 abort */
+        sio_irq_pending = 1;
+        sio_schedule_irq();
+    }
 }
 
 static inline void sio_cancel_irq(void)
@@ -60,6 +82,7 @@ static inline uint32_t SIO_Read_Inner(uint32_t phys)
     {
         uint32_t val = sio_data;
         sio_tx_pending = 0;
+        sio_data = 0xFF; /* Consumed — second read returns 0xFF */
         return val;
     }
     case 0x04: /* SIO_STAT */
@@ -67,8 +90,22 @@ static inline uint32_t SIO_Read_Inner(uint32_t phys)
         uint32_t stat = 0x00000005;
         if (sio_tx_pending)
             stat |= 0x02;
-        if (sio_selected && sio_state > 0 && sio_state < sio_response_len)
-            stat |= 0x80;
+        if (sio_selected && sio_state > 0)
+        {
+            if (sio_device == 2)
+            {
+                /* Memcard: ACK latch model (consume on read) */
+                if (sio_ack_latch) {
+                    stat |= 0x80;
+                    sio_ack_latch = 0;
+                }
+            }
+            else if (sio_state < sio_response_len)
+            {
+                /* Pad: ACK while more response bytes remain */
+                stat |= 0x80;
+            }
+        }
         stat |= (sio_stat & (1 << 9));
         return stat;
     }
@@ -119,6 +156,7 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
         {
             if (tx == 0x01)
             {
+                sio_device = 1; /* pad */
                 if (Joystick_HasMultitap(sio_port))
                 {
                     int slot;
@@ -161,13 +199,56 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
                 sio_data = sio_response[0];
                 sio_state = 1;
                 sio_tx_pending = 1;
-                sio_irq_pending = 1;
-                sio_schedule_irq();
+                sio_assert_ack();
+            }
+            else if (tx == 0x81)
+            {
+                /* Memory card access — always reset card to IDLE for a
+                 * fresh exchange.  The BIOS sometimes starts a new
+                 * exchange without fully completing the previous one. */
+                sio_device = 2;
+                MCD_Reset(sio_port);
+                uint8_t rx = MCD_Tick(sio_port, tx);
+                sio_data = rx;
+                sio_state = 1;
+                sio_tx_pending = 1;
+                if (!MCD_IsIdle(sio_port))
+                {
+                    sio_assert_ack();
+                    /* Cap chain budget so the SIO IRQ fires on time.
+                     * Don't use block_aborted — that would skip the next
+                     * instruction (BIOS card-flag setup) before the ISR. */
+                    int32_t target = (int32_t)SIO_MCD_IRQ_DELAY + 200;
+                    if ((int32_t)cpu.cycles_left > target)
+                    {
+                        cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
+                        cpu.cycles_left = (uint32_t)target;
+                    }
+                }
             }
             else
             {
                 sio_data = 0xFF;
                 sio_tx_pending = 1;
+            }
+        }
+        else if (sio_device == 2)
+        {
+            /* Memcard: route byte to card state machine */
+            uint8_t rx = MCD_Tick(sio_port, tx);
+            sio_data = rx;
+            sio_tx_pending = 1;
+            sio_state++;
+            if (!MCD_IsIdle(sio_port))
+            {
+                sio_assert_ack();
+                /* Cap chain budget so the SIO IRQ fires on time */
+                int32_t target = (int32_t)SIO_MCD_IRQ_DELAY + 200;
+                if ((int32_t)cpu.cycles_left > target)
+                {
+                    cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
+                    cpu.cycles_left = (uint32_t)target;
+                }
             }
         }
         else if (sio_state < sio_response_len)
@@ -176,8 +257,7 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
             sio_tx_pending = 1;
             if (sio_state < sio_response_len - 1)
             {
-                sio_irq_pending = 1;
-                sio_schedule_irq();
+                sio_assert_ack();
             }
             sio_state++;
         }
@@ -204,8 +284,10 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
             sio_response_len = 0;
             sio_selected = 0;
             sio_port = 0;
+            sio_device = 0;
             sio_data = 0xFF;
             sio_irq_pending = 0;
+            sio_ack_latch = 0;
             sio_cancel_irq();
             return;
         }
@@ -219,18 +301,30 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
                 cpu.block_aborted = 1;
             }
         }
+        int old_port = sio_port;
         sio_port = (data >> 13) & 1;
         if (data & 0x02)
         {
-            if (!sio_selected)
+            if (!sio_selected || sio_port != old_port)
+            {
+                /* Fresh select OR port changed → reset exchange state */
+                if (sio_selected && sio_device == 2 && sio_port != old_port)
+                    MCD_Reset(old_port);
                 sio_state = 0;
+                sio_device = 0;
+                sio_ack_latch = 0;
+            }
             sio_selected = 1;
         }
         else
         {
+            if (sio_selected && sio_device == 2)
+                MCD_Reset(sio_port);
             sio_selected = 0;
             sio_state = 0;
+            sio_device = 0;
             sio_irq_pending = 0;
+            sio_ack_latch = 0;
             sio_cancel_irq();
         }
         return;

@@ -26,6 +26,8 @@ typedef struct {
     int  display_mode;        /* 0=4:3 aspect, 1=stretch fill, 2=integer (default 0) */
     int  display_filter;      /* 1 = bilinear filter (default 0 = nearest) */
     int  interpreter;         /* 1 = use interpreter instead of DRC (default 0) */
+    char mcd1_path[512];      /* path to memory card 1 */
+    char mcd2_path[512];      /* path to memory card 2 */
 } PSXConfig;
 
 extern PSXConfig psx_config;

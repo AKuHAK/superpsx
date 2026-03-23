@@ -864,6 +864,7 @@ static inline int run_jit_chain(uint64_t deadline)
 
     cpu.initial_cycles_left = cycles_left;
     cpu.cycles_left = cycles_left;
+    cpu.cycles_left_correction = 0;
 
     /* Batch FlushCache: flush D-cache + invalidate I-cache once before
      * executing any recently compiled/patched code.  This batches the
@@ -890,6 +891,18 @@ static inline int run_jit_chain(uint64_t deadline)
     }
 
     uint32_t cycles_taken = (uint32_t)(cycles_left - remaining);
+    /* Subtract accumulated S2 trim from mid-chain SIO capping.
+     * When memcard ACK caps cpu.cycles_left (and S2 is reloaded),
+     * the chain exits sooner than expected.  Without correction,
+     * cycles_taken = initial - remaining would overcount because
+     * the gap between old S2 and capped S2 was never consumed. */
+    if (cpu.cycles_left_correction > 0)
+    {
+        if ((uint32_t)cpu.cycles_left_correction < cycles_taken)
+            cycles_taken -= (uint32_t)cpu.cycles_left_correction;
+        else
+            cycles_taken = 1;
+    }
     if (cycles_taken == 0)
         cycles_taken = 8;
     global_cycles += cycles_taken;

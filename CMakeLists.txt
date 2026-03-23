@@ -52,6 +52,7 @@ endif()
 # PSP-only options
 if(TARGET_PSP)
     option(ENABLE_PSP_STRIDE_HACK "Zero-copy T4/T8 textures from EDRAM via stride trick" OFF)
+    option(ENABLE_MDEC_VFPU "Use PSP VFPU for MDEC IDCT+CSC (fast, PPSSPP compatible)" ON)
 endif()
 
 # ============================================================================
@@ -117,6 +118,8 @@ set(SUPERPSX_SOURCES
     src/dma.c
     src/mdec.c
     src/mdec_ipu.c
+    src/mdec_vfpu.c
+    src/memorycard.c
     src/sio.c
     src/timers.c
     ${GPU_SOURCES}
@@ -244,6 +247,10 @@ endif()
 
 if(ENABLE_PSP_STRIDE_HACK)
     target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_PSP_STRIDE_HACK)
+endif()
+
+if(ENABLE_MDEC_VFPU)
+    target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_MDEC_VFPU)
 endif()
 
 if(HEADLESS)
@@ -424,6 +431,81 @@ target_include_directories(jit_playground.elf PRIVATE
     ${CMAKE_SOURCE_DIR}/tests/jit
 )
 
+# ============================================================================
+# INT Playground — separate ELF for testing the interpreter in isolation
+# ============================================================================
+set(INT_PLAYGROUND_SOURCES
+    tests/int/playground_main.c
+    tests/int/playground_tests.c
+    tests/int/test_alu.c
+    tests/int/test_memory.c
+    tests/int/test_branch.c
+    tests/int/test_gte.c
+    src/cpu.c
+    src/memory.c
+    src/scheduler.c
+    src/gte.c
+    src/interpreter.c
+    src/dynarec_emit.c
+    src/dynarec_cache.c
+    src/dynarec_memory.c
+    src/dynarec_compile.c
+    src/dynarec_insn.c
+    src/dynarec_run.c
+)
+
+if(TARGET_PSP)
+    list(APPEND INT_PLAYGROUND_SOURCES
+        src/platform/psp/platform_psp.c
+        src/platform/psp/vu0_micro_psp.c
+        src/platform/psp/gte_vfpu.c
+        src/platform/psp/gpu_psp_backend.c
+    )
+else()
+    list(APPEND INT_PLAYGROUND_SOURCES
+        src/platform/ps2/tlb_handler_ps2.c
+        src/platform/ps2/vu0_micro_ps2.c
+        src/platform/ps2/platform_ps2.c
+    )
+endif()
+
+add_executable(int_playground.elf EXCLUDE_FROM_ALL ${INT_PLAYGROUND_SOURCES})
+
+target_include_directories(int_playground.elf PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${PLATFORM_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/tests/int
+)
+
+if(TARGET_PSP)
+    target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
+    target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND PLATFORM_PSP)
+    target_link_libraries(int_playground.elf PRIVATE
+        -lpsppower
+        -lm
+        -lc
+        -lpspdebug
+        -lpspkernel
+    )
+    # Fix up import stubs (must run after linking)
+    add_custom_command(
+        TARGET int_playground.elf
+        POST_BUILD COMMAND
+        "$ENV{PSPDEV}/bin/psp-fixup-imports" "$<TARGET_FILE:int_playground.elf>"
+        COMMENT "Calling psp-fixup-imports for int_playground.elf"
+    )
+else()
+    target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall)
+    target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND ENABLE_VU0_MICRO PLATFORM_PS2)
+    add_dependencies(int_playground.elf vu0_programs)
+    target_link_libraries(int_playground.elf PRIVATE
+        ${VU0_OBJECTS}
+        -lpatches
+        -lps2_drivers
+    )
+endif()
+
 if(TARGET_PSP)
     target_compile_options(jit_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
     target_compile_definitions(jit_playground.elf PRIVATE JIT_PLAYGROUND PLATFORM_PSP)
@@ -504,6 +586,22 @@ else()
             -P "${EMU_RUN_SCRIPT}"
         DEPENDS jit_playground.elf
         COMMENT "Running JIT Playground in PCSX2"
+        VERBATIM
+    )
+
+    set(INT_PG_CMD "${PCSX2_PATH}")
+    foreach(_f ${PCSX2_RUN_FLAGS})
+        list(APPEND INT_PG_CMD "${_f}")
+    endforeach()
+    list(APPEND INT_PG_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/int_playground.elf")
+    string(REPLACE ";" "\\;" INT_PG_CMD_ESC "${INT_PG_CMD}")
+
+    add_custom_target(run-int-playground
+        COMMAND ${CMAKE_COMMAND}
+            "-DPCSX2_CMD=${INT_PG_CMD_ESC}"
+            -P "${EMU_RUN_SCRIPT}"
+        DEPENDS int_playground.elf
+        COMMENT "Running INT Playground in PCSX2"
         VERBATIM
     )
 endif()

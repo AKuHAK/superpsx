@@ -79,7 +79,8 @@ int main(int argc, char *argv[])
         }
 
         psx_exe_filename = psx_exe_filename_buf;
-        psx_config.boot_bios_only = 0;
+        if (!psx_config.boot_bios_only)
+            psx_config.boot_bios_only = 0;
         printf("Using PSX exe from argv: %s (cwd set to %s)\n",
                psx_exe_filename, argv[0]);
 

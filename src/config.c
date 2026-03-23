@@ -52,6 +52,10 @@ int load_config_file(void)
     psx_config.display_mode = 0;
     psx_config.display_filter = 0;
     psx_config.interpreter = 0;
+    strncpy(psx_config.mcd1_path, "memcard1.mcd", sizeof(psx_config.mcd1_path) - 1);
+    psx_config.mcd1_path[sizeof(psx_config.mcd1_path) - 1] = '\0';
+    strncpy(psx_config.mcd2_path, "memcard2.mcd", sizeof(psx_config.mcd2_path) - 1);
+    psx_config.mcd2_path[sizeof(psx_config.mcd2_path) - 1] = '\0';
     strncpy(psx_config.bios_path, BIOS_PATH_DEFAULT, sizeof(psx_config.bios_path) - 1);
     psx_config.bios_path[sizeof(psx_config.bios_path) - 1] = '\0';
 
@@ -207,6 +211,18 @@ int load_config_file(void)
         {
             psx_config.interpreter = (atoi(val) != 0 && strcasecmp(val, "false") != 0);
             printf("CONFIG: interpreter = %d\n", psx_config.interpreter);
+        }
+        else if (strcasecmp(key, "mcd1") == 0 && val[0] != '\0')
+        {
+            strncpy(psx_config.mcd1_path, val, sizeof(psx_config.mcd1_path) - 1);
+            psx_config.mcd1_path[sizeof(psx_config.mcd1_path) - 1] = '\0';
+            printf("CONFIG: mcd1 = %s\n", psx_config.mcd1_path);
+        }
+        else if (strcasecmp(key, "mcd2") == 0 && val[0] != '\0')
+        {
+            strncpy(psx_config.mcd2_path, val, sizeof(psx_config.mcd2_path) - 1);
+            psx_config.mcd2_path[sizeof(psx_config.mcd2_path) - 1] = '\0';
+            printf("CONFIG: mcd2 = %s\n", psx_config.mcd2_path);
         }
         line = next;
     }

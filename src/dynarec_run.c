@@ -41,6 +41,17 @@
 #define RUN_RES_BREAK 1
 #define RUN_RES_CONTINUE 2
 
+#ifndef PLAYGROUND_H
+#include "platform.h"
+#include "gpu_backend.h"
+#ifdef ENABLE_VU0_MICRO
+#include "vu0_micro_ps2.h"
+#endif
+#include "spu.h"
+#include "scheduler.h"
+#include "psx_dma.h"
+#endif
+
 /* ================================================================
  *  Module Variable Definitions
  * ================================================================ */
@@ -131,12 +142,12 @@ static uint32_t perf_last_report_tick = 0;
 
 /* Main execution flow state */
 int binary_loaded = 0;
-static uint32_t run_iterations = 0;
-static uint32_t idle_skip_pc = 0;
-static uint32_t idle_skip_count = 0;
-static uint32_t poll_detect_pc = 0;
-static uint32_t *poll_patched_addr = NULL; /* Location of patched instructions */
-static uint32_t poll_patched_saved[2];     /* Original 2 instructions at that location */
+uint32_t run_iterations = 0;
+uint32_t idle_skip_pc = 0;
+uint32_t idle_skip_count = 0;
+uint32_t poll_detect_pc = 0;
+uint32_t *poll_patched_addr = NULL; /* Location of patched instructions */
+uint32_t poll_patched_saved[2];     /* Original 2 instructions at that location */
 
 #ifdef ENABLE_VRAM_DUMP
 static uint32_t next_vram_dump = 3500;
@@ -408,6 +419,7 @@ void Init_Dynarec(void)
         *p++ = MK_I(0x2B, REG_AT, REG_T9, (int16_t)pbc_lo);         /* sw t9, lo(&pbc) */
         *p++ = MK_J(3, (uint32_t)call_c_trampoline_lite_addr >> 2); /* jal lite_tramp */
         *p++ = MK_I(0x2B, REG_S0, REG_S2, CPU_CYCLES_LEFT);         /* (delay) sw s2, cpu.cycles_left (P9) */
+        *p++ = MK_I(0x23, REG_S0, REG_S2, CPU_CYCLES_LEFT);         /* lw s2, cpu.cycles_left — reload after C call (SIO cap fix) */
         *p++ = MK_I(0x23, REG_SP, REG_RA, 64);                      /* lw ra, 64(sp) */
         *p++ = MK_R(0, REG_RA, 0, 0, 0, 0x08);                      /* jr ra */
         *p++ = 0;                                                   /* delay: nop */
@@ -605,7 +617,7 @@ static inline void handle_performance_report(void)
     }
 }
 
-static inline void sync_hardware_and_interrupts(void)
+void sync_hardware_and_interrupts(void)
 {
     if (CheckInterrupts())
     {
@@ -768,9 +780,10 @@ uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be)
     return block;
 }
 
-static inline int run_jit_chain(uint64_t deadline)
+int run_jit_chain(uint64_t deadline)
 {
     uint32_t pc = cpu.pc;
+    /* DLOG("DRC: run_jit_chain(deadline=%" PRIu64 ", PC=0x%08X)\n", deadline, (unsigned)pc); */
 
     /* Dynamic polling skip: if this PC was seen as a self-loop last time,
      * skip immediately instead of executing another polling iteration.
@@ -788,13 +801,18 @@ static inline int run_jit_chain(uint64_t deadline)
             jit_flush_pending = 1;
         }
         poll_detect_pc = 0;
-        if (deadline > global_cycles)
+        /* Clamp skip to nearest scheduler event so we never leap
+         * over a pending SIO IRQ or timer callback. */
+        uint64_t skip_target = deadline;
+        if (scheduler_cached_earliest < skip_target)
+            skip_target = scheduler_cached_earliest;
+        if (skip_target > global_cycles)
         {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
             hotspot_idle_skips++;
-            hotspot_idle_cycles_skipped += (deadline - global_cycles);
+            hotspot_idle_cycles_skipped += (skip_target - global_cycles);
 #endif
-            global_cycles = deadline;
+            global_cycles = skip_target;
         }
         return RUN_RES_BREAK;
     }
@@ -865,7 +883,6 @@ static inline int run_jit_chain(uint64_t deadline)
     cpu.initial_cycles_left = cycles_left;
     cpu.cycles_left = cycles_left;
     cpu.cycles_left_correction = 0;
-
     /* Batch FlushCache: flush D-cache + invalidate I-cache once before
      * executing any recently compiled/patched code.  This batches the
      * buffer-reset flush with the first compile, and deduplicates
@@ -935,13 +952,18 @@ static inline int run_jit_chain(uint64_t deadline)
             uint32_t threshold = (be->is_idle == 1) ? 1 : 2;
             if (++idle_skip_count >= threshold)
             {
-                if (deadline > global_cycles)
+                /* Clamp skip to nearest scheduler event so we never leap
+                 * over a pending SIO IRQ or timer callback. */
+                uint64_t idle_skip_target = deadline;
+                if (scheduler_cached_earliest < idle_skip_target)
+                    idle_skip_target = scheduler_cached_earliest;
+                if (idle_skip_target > global_cycles)
                 {
 #ifdef ENABLE_SUBSYSTEM_PROFILER
                     hotspot_idle_skips++;
-                    hotspot_idle_cycles_skipped += (deadline - global_cycles);
+                    hotspot_idle_cycles_skipped += (idle_skip_target - global_cycles);
 #endif
-                    global_cycles = deadline;
+                    global_cycles = idle_skip_target;
                 }
                 /* Restore poll patch so the block can re-execute normally
                  * after the scheduler fires events that may change IO state.
@@ -976,6 +998,7 @@ static inline int run_jit_chain(uint64_t deadline)
      * when the DMA finishes, and skipping would inflate Timer2 counts. */
     if (__builtin_expect(cpu.pc == pc && !DMA_IsPending(), 0))
     {
+        DLOG("Poll Detect: PC 0x%08X (poll_detect_pc=%08X)\n", (unsigned)pc, (unsigned)poll_detect_pc);
         poll_detect_pc = pc;
         /* Patch the block's entry point: overwrite first body instruction
          * with J abort_trampoline.  When any chain reaches this block via
@@ -1100,18 +1123,27 @@ void Run_CPU(void)
         if (deadline == UINT64_MAX)
             deadline = global_cycles + 1024;
 
+        /* During MCD exchange, cap the deadline to prevent HBlank
+         * event accumulation.  The interpreter dispatches events
+         * every ~2 cycles (per-instruction), so the ISR cascade
+         * resolves quickly.  In DRC, the outer loop deadline can be
+         * 69K+ cycles (one HBlank batch), allowing many events to
+         * stack up and starve lower-priority IRQ sources like SIO.
+         * Cap to 2048 cycles to match interpreter granularity. */
+        {
+            extern int sio_state;
+            if (sio_state > 0)
+            {
+                uint64_t mcd_dl = global_cycles + 2048;
+                if (mcd_dl < deadline)
+                    deadline = mcd_dl;
+            }
+        }
+
         while (global_cycles < deadline)
         {
-            if (psx_config.interpreter)
-            {
-                if (run_interpreter_chain(deadline) == RUN_RES_BREAK)
-                    break;
-            }
-            else
-            {
-                if (run_jit_chain(deadline) == RUN_RES_BREAK)
-                    break;
-            }
+            if (run_jit_chain(deadline) == RUN_RES_BREAK)
+                break;
             /* A hardware write (e.g. DMA CHCR) may have scheduled a new
              * event with a deadline earlier than our current batch deadline.
              * Break out so the outer loop re-reads scheduler_cached_earliest
@@ -1123,6 +1155,7 @@ void Run_CPU(void)
         if (global_cycles >= scheduler_cached_earliest)
         {
             PROF_PUSH(PROF_SCHEDULER);
+            /* Log dispatch when SIO event is active or SIO IRQ is pending */
             Scheduler_DispatchEvents(global_cycles);
             PROF_POP(PROF_SCHEDULER);
         }

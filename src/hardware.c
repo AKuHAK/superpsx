@@ -37,6 +37,24 @@ void SignalInterrupt(uint32_t irq)
 {
     if (irq > 10)
         return;
+    /* Defer VBlank (bit 0) while MCD data transfer is in progress.
+     * The BIOS ISR event dispatch loop processes VBlank callbacks which
+     * take ~84K cycles, starving SIO byte processing and causing the
+     * BIOS MCD exchange to time out.  Deferring VBlank until the
+     * exchange completes avoids this race.
+     * TODO: re-enable once Crash Bandicoot regression is fixed. */
+#if 0
+    if (irq == 0)
+    {
+        extern int sio_state;
+        if (sio_state >= 11)
+        {
+            extern uint32_t sio_deferred_vblank;
+            sio_deferred_vblank = 1;
+            return;
+        }
+    }
+#endif
     cpu.i_stat |= (1 << irq);
 }
 

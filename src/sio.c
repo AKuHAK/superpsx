@@ -19,6 +19,18 @@ int sio_tx_pending = 0; /* 1 = RX data available */
 
 /* Controller protocol state machine — partially exposed for JIT */
 int sio_state = 0;               /* Current byte index in protocol */
+uint32_t sio_deferred_vblank = 0; /* VBlank deferred during MCD data xfer */
+
+/* Flush any deferred VBlank when leaving MCD data transfer phase */
+static inline void sio_flush_deferred_vblank(void)
+{
+    if (sio_deferred_vblank)
+    {
+        cpu.i_stat |= 1; /* VBlank bit 0 */
+        sio_deferred_vblank = 0;
+    }
+}
+
 static uint8_t sio_response[20]; /* Pre-built response buffer */
 int sio_response_len = 0;        /* Number of valid bytes in sio_response */
 int sio_selected = 0;            /* 1 = JOY SELECT is asserted */
@@ -36,9 +48,14 @@ volatile uint64_t sio_irq_delay_cycle = 0;
 int sio_irq_pending = 0;
 int sio_ack_latch = 0;          /* 1 = ACK pulse ready, consumed on STAT read */
 
+/* SIO trace for debugging memory card protocol — disabled for performance */
+#define SIO_TRACE(fmt, ...) do {} while(0)
+
 /* ---- Scheduler-driven SIO IRQ delay ---- */
 static void Sched_SIO_IRQ_Callback(void)
 {
+    SIO_TRACE("IRQ CB fired cy=%llu pending=%d dev=%d state=%d\n",
+              (unsigned long long)global_cycles, sio_irq_pending, sio_device, sio_state);
     sio_irq_delay_cycle = 0;
     sio_irq_pending = 0;    /* IRQ delivered — no longer pending */
     sio_stat |= (1 << 9);   /* Latch IRQ flag — BIOS checks this to confirm SIO source */
@@ -52,19 +69,34 @@ static inline void sio_schedule_irq(void)
     Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
 }
 
-/* Assert ACK: set latch + schedule IRQ with device-appropriate delay */
+/* Assert ACK: set latch + schedule IRQ with device-appropriate delay.
+ * Also caps cpu.cycles_left so the JIT block exits before the IRQ
+ * deadline, ensuring timely interrupt delivery. */
 static inline void sio_assert_ack(void)
 {
     sio_ack_latch = 1;
+    int32_t delay;
     if (sio_device == 2) {
         /* Memcard: longer delay, NO sio_irq_pending (no block_aborted) */
-        uint64_t deadline = global_cycles + partial_block_cycles + SIO_MCD_IRQ_DELAY;
+        delay = SIO_MCD_IRQ_DELAY;
+        uint64_t deadline = global_cycles + partial_block_cycles + delay;
+        SIO_TRACE("ACK MCD: gc=%llu pbc=%u delay=%u -> deadline=%llu cached_earliest=%llu\n",
+                  (unsigned long long)global_cycles, partial_block_cycles, SIO_MCD_IRQ_DELAY,
+                  (unsigned long long)deadline, (unsigned long long)scheduler_cached_earliest);
         sio_irq_delay_cycle = deadline;
         Scheduler_ScheduleEvent(SCHED_EVENT_SIO_IRQ, deadline, Sched_SIO_IRQ_Callback);
     } else {
         /* Pad: shorter delay + irq_pending for ack4 abort */
+        delay = SIO_IRQ_DELAY;
         sio_irq_pending = 1;
         sio_schedule_irq();
+    }
+    /* Cap remaining block cycles so the JIT returns to the outer
+     * loop before the scheduled SIO IRQ deadline. */
+    int32_t target = delay + 200;
+    if ((int32_t)cpu.cycles_left > target) {
+        cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
+        cpu.cycles_left = (uint32_t)target;
     }
 }
 
@@ -83,6 +115,7 @@ static inline uint32_t SIO_Read_Inner(uint32_t phys)
         uint32_t val = sio_data;
         sio_tx_pending = 0;
         sio_data = 0xFF; /* Consumed — second read returns 0xFF */
+        SIO_TRACE("RD DATA=0x%02X state=%d dev=%d cy=%llu\n", val, sio_state, sio_device, (unsigned long long)global_cycles);
         return val;
     }
     case 0x04: /* SIO_STAT */
@@ -145,6 +178,11 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
     case 0x00: /* 0x1F801040: SIO_DATA */
     {
         uint8_t tx = (uint8_t)(data & 0xFF);
+        SIO_TRACE("WR TX=0x%02X state=%d dev=%d sel=%d cy=%llu pbc=%u cl=%d icl=%d corr=%d\n",
+                  tx, sio_state, sio_device, sio_selected,
+                  (unsigned long long)global_cycles, partial_block_cycles,
+                  (int)cpu.cycles_left, (int)cpu.initial_cycles_left,
+                  (int)cpu.cycles_left_correction);
         if (!sio_selected)
         {
             sio_data = 0xFF;
@@ -215,15 +253,6 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
                 if (!MCD_IsIdle(sio_port))
                 {
                     sio_assert_ack();
-                    /* Cap chain budget so the SIO IRQ fires on time.
-                     * Don't use block_aborted — that would skip the next
-                     * instruction (BIOS card-flag setup) before the ISR. */
-                    int32_t target = (int32_t)SIO_MCD_IRQ_DELAY + 200;
-                    if ((int32_t)cpu.cycles_left > target)
-                    {
-                        cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
-                        cpu.cycles_left = (uint32_t)target;
-                    }
                 }
             }
             else
@@ -239,15 +268,15 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
             sio_data = rx;
             sio_tx_pending = 1;
             sio_state++;
+            SIO_TRACE("MCD TICK rx=0x%02X state=%d idle=%d\n", rx, sio_state, MCD_IsIdle(sio_port));
             if (!MCD_IsIdle(sio_port))
             {
                 sio_assert_ack();
-                /* Cap chain budget so the SIO IRQ fires on time */
-                int32_t target = (int32_t)SIO_MCD_IRQ_DELAY + 200;
-                if ((int32_t)cpu.cycles_left > target)
-                {
+            } else {
+                int target = 200;
+                if ((int32_t)cpu.cycles_left > target) {
                     cpu.cycles_left_correction += ((int32_t)cpu.cycles_left - target);
-                    cpu.cycles_left = (uint32_t)target;
+                    cpu.cycles_left = target;
                 }
             }
         }
@@ -280,6 +309,7 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
             sio_mode = 0;
             sio_baud = 0;
             sio_tx_pending = 0;
+            sio_flush_deferred_vblank();
             sio_state = 0;
             sio_response_len = 0;
             sio_selected = 0;
@@ -310,17 +340,21 @@ static inline void SIO_Write_Inner(uint32_t phys, uint32_t data)
                 /* Fresh select OR port changed → reset exchange state */
                 if (sio_selected && sio_device == 2 && sio_port != old_port)
                     MCD_Reset(old_port);
+                sio_flush_deferred_vblank();
                 sio_state = 0;
                 sio_device = 0;
                 sio_ack_latch = 0;
             }
             sio_selected = 1;
+            SIO_TRACE("CTRL SELECT port=%d\n", sio_port);
         }
         else
         {
             if (sio_selected && sio_device == 2)
                 MCD_Reset(sio_port);
             sio_selected = 0;
+            SIO_TRACE("CTRL DESELECT port=%d\n", sio_port);
+            sio_flush_deferred_vblank();
             sio_state = 0;
             sio_device = 0;
             sio_irq_pending = 0;

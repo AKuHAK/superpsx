@@ -6,6 +6,7 @@
 #include "audio_backend.h"
 #include "superpsx.h"
 #include "spu.h"
+#include "scheduler.h"
 #include "profiler.h"
 
 #define LOG_TAG "SPU"
@@ -76,6 +77,11 @@ static uint16_t data_fifo;     /* Data transfer FIFO register */
 /* Reverb / noise / misc registers — stored but not processed */
 static uint16_t spu_reg_store[256];
 
+/* ---- SPU IRQ9 (address match interrupt) ---- */
+static uint32_t spu_irq_addr;   /* Byte address in SPU RAM (IRQ address reg × 8) */
+static int      spu_irq_enabled; /* Cached SPUCNT bit 6 */
+static int      spu_irq_fired;   /* Sticky: set when IRQ9 fires, cleared on ack */
+
 /* ---- ADPCM filter coefficients (fixed-point, 1.0 = 64) ---- */
 static const int32_t adpcm_filter[5][2] = {
     {0, 0},
@@ -96,6 +102,10 @@ static int32_t mix_buf_l[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int32_t mix_buf_r[SPU_MIX_BUF_SIZE] __attribute__((aligned(16)));
 static int spu_initialized = 0;
 int spu_samples_generated = 0; /* Incremental: how many samples generated this frame */
+static uint64_t spu_frame_start_cycle = 0;
+
+/* CPU cycles per SPU sample: 33868800 / 44100 ≈ 768 */
+#define CYCLES_PER_SAMPLE 768
 
 /* ---- ADSR envelope implementation ----
  *
@@ -318,6 +328,9 @@ void SPU_Init(void)
     spu_stat = 0;
     transfer_addr = 0;
     transfer_ptr = 0;
+    spu_irq_addr = 0;
+    spu_irq_enabled = 0;
+    spu_irq_fired = 0;
 
     int audio_ret = Audio_Backend_Init();
     if (audio_ret < 0)
@@ -550,31 +563,45 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         main_vol_r = (int16_t)value;
         break;
 
-    /* Key On (0x1F801D88-0x1F801D8B) — process immediately on each half */
+    /* Key On (0x1F801D88-0x1F801D8B) — catch up SPU then process */
     case 0xC4: /* KON low (0x1F801D88) */
         key_on_lo = value;
-        if (value)
+        if (value) {
+            SPU_CatchUp();
             process_key_on((uint32_t)value);
+        }
         break;
     case 0xC5: /* KON high (0x1F801D8A) */
         key_on_hi = value;
-        if (value)
+        if (value) {
+            SPU_CatchUp();
             process_key_on((uint32_t)value << 16);
+        }
         break;
 
-    /* Key Off (0x1F801D8C-0x1F801D8F) — process immediately on each half */
+    /* Key Off (0x1F801D8C-0x1F801D8F) — catch up SPU then process */
     case 0xC6: /* KOFF low (0x1F801D8C) */
-        if (value)
+        if (value) {
+            SPU_CatchUp();
             process_key_off((uint32_t)value);
+        }
         break;
     case 0xC7: /* KOFF high (0x1F801D8E) */
-        if (value)
+        if (value) {
+            SPU_CatchUp();
             process_key_off((uint32_t)value << 16);
+        }
         break;
 
     /* ENDX (0x1F801D9C-0x1F801D9F) — read-only on real hardware, writes ignored */
     case 0xCE:
     case 0xCF:
+        break;
+
+    /* Sound RAM IRQ Address (0x1F801DA4) */
+    case 0xD2:
+        spu_reg_store[0xD2] = value;
+        spu_irq_addr = (uint32_t)value << 3; /* Convert from 8-byte units to byte address */
         break;
 
     /* Transfer Address (0x1F801DA6) */
@@ -590,6 +617,14 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         {
             spu_ram[transfer_ptr] = (uint8_t)(value & 0xFF);
             spu_ram[transfer_ptr + 1] = (uint8_t)(value >> 8);
+            /* Check IRQ9 address match on FIFO write */
+            if (spu_irq_enabled && !spu_irq_fired &&
+                (transfer_ptr & ~0xF) == spu_irq_addr)
+            {
+                spu_stat |= 0x0040;
+                spu_irq_fired = 1;
+                SignalInterrupt(9);
+            }
             transfer_ptr += 2;
             transfer_ptr &= (SPU_RAM_SIZE - 1);
         }
@@ -601,6 +636,13 @@ void SPU_WriteReg(uint32_t offset, uint16_t value)
         /* SPUSTAT bits 0-5 mirror SPUCNT bits 0-5 directly.
          * Bit 6 = IRQ9 flag (preserved). */
         spu_stat = (spu_stat & 0x0040) | (value & 0x3F);
+        spu_irq_enabled = (value >> 6) & 1;
+        /* Writing bit6=0 acknowledges/clears the IRQ flag */
+        if (!spu_irq_enabled)
+        {
+            spu_stat &= ~0x0040;
+            spu_irq_fired = 0;
+        }
         break;
 
     /* SPUSTAT (0x1F801DAE) — read-only, writes ignored */
@@ -684,6 +726,10 @@ uint16_t SPU_ReadReg(uint32_t offset)
 /* ---- DMA Channel 4: CPU RAM ↔ SPU RAM ---- */
 void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr)
 {
+    /* Catch up SPU before modifying SPU RAM — voices reading from
+     * the transfer region need their samples generated first. */
+    SPU_CatchUp();
+
     uint32_t block_size = bcr & 0xFFFF;
     uint32_t block_count = (bcr >> 16) & 0xFFFF;
     if (block_count == 0)
@@ -710,6 +756,14 @@ void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr)
             {
                 spu_ram[transfer_ptr] = psx_ram[src_addr + i];
                 spu_ram[transfer_ptr + 1] = psx_ram[src_addr + i + 1];
+                /* SPU IRQ9: check if DMA write touches IRQ address */
+                if (spu_irq_enabled && !spu_irq_fired &&
+                    (transfer_ptr & ~0xF) == spu_irq_addr)
+                {
+                    spu_stat |= 0x0040;
+                    spu_irq_fired = 1;
+                    SignalInterrupt(9);
+                }
                 transfer_ptr += 2;
                 transfer_ptr &= (SPU_RAM_SIZE - 1);
             }
@@ -728,6 +782,14 @@ void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr)
             {
                 psx_ram[src_addr + i] = spu_ram[transfer_ptr];
                 psx_ram[src_addr + i + 1] = spu_ram[transfer_ptr + 1];
+                /* SPU IRQ9: check if DMA read touches IRQ address */
+                if (spu_irq_enabled && !spu_irq_fired &&
+                    (transfer_ptr & ~0xF) == spu_irq_addr)
+                {
+                    spu_stat |= 0x0040;
+                    spu_irq_fired = 1;
+                    SignalInterrupt(9);
+                }
                 transfer_ptr += 2;
                 transfer_ptr &= (SPU_RAM_SIZE - 1);
             }
@@ -805,6 +867,14 @@ void SPU_GenerateChunk(int num_samples)
         {
             if (__builtin_expect(!v->block_decoded, 0))
             {
+                /* SPU IRQ9: check if voice is reading from the IRQ address */
+                if (spu_irq_enabled && !spu_irq_fired &&
+                    v->current_addr == spu_irq_addr)
+                {
+                    spu_stat |= 0x0040;
+                    spu_irq_fired = 1;
+                    SignalInterrupt(9);
+                }
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
                     break;
@@ -865,6 +935,14 @@ void SPU_GenerateChunk(int num_samples)
             /* ---- Single sample with full ADSR tick (handles overflow) ---- */
             if (__builtin_expect(!v->block_decoded, 0))
             {
+                /* SPU IRQ9: check address match */
+                if (spu_irq_enabled && !spu_irq_fired &&
+                    v->current_addr == spu_irq_addr)
+                {
+                    spu_stat |= 0x0040;
+                    spu_irq_fired = 1;
+                    SignalInterrupt(9);
+                }
                 decode_adpcm_block(v, v->current_addr);
                 if (!v->active)
                     break;
@@ -929,6 +1007,7 @@ void SPU_FlushAudio(void)
     /* Apply main volume and clamp */
     int32_t eff_vol_l = get_effective_volume(main_vol_l);
     int32_t eff_vol_r = get_effective_volume(main_vol_r);
+
     SPU_Mix_And_Clamp(mix_buf_l, mix_buf_r, mix_buffer, total, eff_vol_l, eff_vol_r);
 
     /* Output to audsrv — non-blocking: IOP-side play_audio copies
@@ -944,7 +1023,32 @@ void SPU_FlushAudio(void)
     PROF_POP(PROF_SPU_FLUSH);
 }
 
-/* ---- Legacy: generate full frame (backwards compat) ---- */
+/* ---- Catch-up: generate pending samples up to current cycle ---- */
+void SPU_CatchUp(void)
+{
+    if (prof_disable_spu || !spu_initialized)
+        return;
+
+    uint64_t now = global_cycles + partial_block_cycles;
+    if (now <= spu_frame_start_cycle)
+        return;
+
+    int target = (int)((now - spu_frame_start_cycle) / CYCLES_PER_SAMPLE);
+    if (target > SAMPLES_PER_FRAME)
+        target = SAMPLES_PER_FRAME;
+
+    int pending = target - spu_samples_generated;
+    if (pending > 0)
+        SPU_GenerateChunk(pending);
+}
+
+/* ---- Frame start: reset cycle tracker for catch-up ---- */
+void SPU_FrameStart(void)
+{
+    spu_frame_start_cycle = global_cycles;
+}
+
+/* ---- Generate remaining samples for frame and flush to audio hw ---- */
 void SPU_GenerateSamples(void)
 {
     /* Profiling: skip SPU entirely when disabled */

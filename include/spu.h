@@ -15,6 +15,8 @@ void SPU_DMA4(uint32_t madr, uint32_t bcr, uint32_t chcr);
 void SPU_GenerateSamples(void);
 void SPU_GenerateChunk(int num_samples);
 void SPU_FlushAudio(void);
+void SPU_CatchUp(void);
+void SPU_FrameStart(void);
 
 #ifdef __cplusplus
 }

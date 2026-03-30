@@ -696,7 +696,8 @@ static void Sched_HBlank_Callback(int ticks_late)
         gpu_pending_vblank_flush = 1;
         SignalInterrupt(0);
         Timer_ScheduleAll();   /* Reschedule timers after VBlank reset */
-        SPU_GenerateSamples(); /* Generate all audio + submit to audio hw */
+        SPU_GenerateSamples(); /* Generate remaining audio + submit to audio hw */
+        SPU_FrameStart();      /* Reset SPU frame cycle for catch-up */  
 
         /* Frame limiter: busy-wait until the wall-clock frame budget is met.
          * On PSP, GPU_Backend_UpdateDisplay() already syncs via sceGuSync +

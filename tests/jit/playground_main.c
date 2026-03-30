@@ -111,7 +111,8 @@ uint32_t GPU_Read_GPUREAD(void) { return 0; }
 void DumpVRAM(void) {}
 
 /* --- SPU --- */
-void SPU_GenerateSamples(int n) { (void)n; }
+void SPU_GenerateSamples(void) {}
+void SPU_FrameStart(void) {}
 void SPU_Init(void) {}
 void SPU_Shutdown(void) {}
 void SPU_WriteRegister(uint32_t a, uint16_t v)

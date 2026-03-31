@@ -463,8 +463,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
             /* @no_overflow: invalidate scratch cache (XOR/NOR clobbered them) */
-            t8_cached_psx_reg = -1;
-            t9_cached_psx_reg = -1;
+            reg_cache_invalidate();
             emit_sync_reg(rd, d);
             break;
         }
@@ -548,8 +547,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
             *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
-            t8_cached_psx_reg = -1;
-            t9_cached_psx_reg = -1;
+            reg_cache_invalidate();
             emit_sync_reg(rd, d);
             break;
         }
@@ -731,8 +729,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
 
         *bgez_patch = MK_I(1, REG_AT, 1, (int16_t)(code_ptr - bgez_patch - 1));
 
-        t8_cached_psx_reg = -1;
-        t9_cached_psx_reg = -1;
+        reg_cache_invalidate();
         emit_sync_reg(rt, d);
         /* SMRV: ADDI from RAM base stays in RAM (if no overflow) */
         if (rs_ram)

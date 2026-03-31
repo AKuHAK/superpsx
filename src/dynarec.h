@@ -573,6 +573,18 @@ extern int t8_cached_psx_reg;
 extern int t9_cached_psx_reg;
 void reg_cache_invalidate(void);
 
+/* Invalidate scratch cache if PSX register r is cached in T8 or T9 */
+#define SCRATCH_INVALIDATE_PSX(r) do { \
+    if (t8_cached_psx_reg == (r)) t8_cached_psx_reg = -1; \
+    if (t9_cached_psx_reg == (r)) t9_cached_psx_reg = -1; \
+} while (0)
+
+/* Invalidate scratch cache if hwreg is T8 or T9 */
+#define SCRATCH_INVALIDATE_HWREG(hwreg) do { \
+    if ((hwreg) == REG_T8) t8_cached_psx_reg = -1; \
+    else if ((hwreg) == REG_T9) t9_cached_psx_reg = -1; \
+} while (0)
+
 /* Dynamic register slots — dirty writeback T0-T7.
  * Per-block allocation: top-N non-pinned regs mapped to T0-T7 (8 slots).
  * Dirty writeback: stores update the slot reg and set a compile-time dirty

@@ -306,10 +306,7 @@ void emit_load_psx_reg(int hwreg, int r)
             {
                 if (hwreg != dyn_slot_ee[si])
                     EMIT_MOVE(hwreg, dyn_slot_ee[si]);
-                if (hwreg == REG_T8)
-                    t8_cached_psx_reg = -1;
-                else if (hwreg == REG_T9)
-                    t9_cached_psx_reg = -1;
+                SCRATCH_INVALIDATE_HWREG(hwreg);
                 return;
             }
         }
@@ -326,10 +323,7 @@ void emit_load_psx_reg(int hwreg, int r)
         return;
     }
     /* Non-cacheable paths (r=0, dirty const, pinned): invalidate scratch */
-    if (hwreg == REG_T8)
-        t8_cached_psx_reg = -1;
-    else if (hwreg == REG_T9)
-        t9_cached_psx_reg = -1;
+    SCRATCH_INVALIDATE_HWREG(hwreg);
 }
 
 int emit_use_reg(int r, int scratch)
@@ -364,10 +358,7 @@ int emit_use_reg(int r, int scratch)
         vregs[r].is_dirty = 0;
         dirty_const_mask &= ~(1u << r);
         /* Const materialized into scratch: invalidate cached entry */
-        if (dst == REG_T8)
-            t8_cached_psx_reg = -1;
-        else if (dst == REG_T9)
-            t9_cached_psx_reg = -1;
+        SCRATCH_INVALIDATE_HWREG(dst);
         return dst;
     }
     if (psx_pinned_reg[r])
@@ -427,11 +418,7 @@ void emit_store_psx_reg(int r, int hwreg)
             if (dyn_slot_ee[si] != hwreg)
                 EMIT_MOVE(dyn_slot_ee[si], hwreg);
             dyn_dirty_mask |= (1u << si);
-            /* Invalidate scratch cache if it held this PSX reg */
-            if (t8_cached_psx_reg == r)
-                t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r)
-                t9_cached_psx_reg = -1;
+            SCRATCH_INVALIDATE_PSX(r);
             return;
         }
     }
@@ -464,10 +451,7 @@ void emit_sync_reg(int r, int host_reg)
             if (dyn_slot_ee[si] != host_reg)
                 EMIT_MOVE(dyn_slot_ee[si], host_reg);
             dyn_dirty_mask |= (1u << si);
-            if (t8_cached_psx_reg == r)
-                t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r)
-                t9_cached_psx_reg = -1;
+            SCRATCH_INVALIDATE_PSX(r);
             return;
         }
     }
@@ -514,20 +498,13 @@ void flush_dirty_consts(void)
                 int si = dyn_slot_find(r);
                 emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
                 dyn_dirty_mask |= (1u << si);
-                if (t8_cached_psx_reg == r)
-                    t8_cached_psx_reg = -1;
-                if (t9_cached_psx_reg == r)
-                    t9_cached_psx_reg = -1;
+                SCRATCH_INVALIDATE_PSX(r);
             }
             else
             {
                 emit_load_imm32(REG_AT, vregs[r].value);
                 EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-                /* cpu.regs[r] changed; invalidate stale cache entry */
-                if (t8_cached_psx_reg == r)
-                    t8_cached_psx_reg = -1;
-                if (t9_cached_psx_reg == r)
-                    t9_cached_psx_reg = -1;
+                SCRATCH_INVALIDATE_PSX(r);
             }
             vregs[r].is_dirty = 0;
         }
@@ -732,20 +709,13 @@ void mark_vreg_var(int r)
             int si = dyn_slot_find(r);
             emit_load_imm32(dyn_slot_ee[si], vregs[r].value);
             dyn_dirty_mask |= (1u << si);
-            if (t8_cached_psx_reg == r)
-                t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r)
-                t9_cached_psx_reg = -1;
+            SCRATCH_INVALIDATE_PSX(r);
         }
         else
         {
             emit_load_imm32(REG_AT, vregs[r].value);
             EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-            /* cpu.regs[r] changed; invalidate stale cache entry */
-            if (t8_cached_psx_reg == r)
-                t8_cached_psx_reg = -1;
-            if (t9_cached_psx_reg == r)
-                t9_cached_psx_reg = -1;
+            SCRATCH_INVALIDATE_PSX(r);
         }
     }
     vregs[r].is_const = 0;
@@ -806,11 +776,7 @@ void emit_cpu_field_to_psx_reg(int field_offset, int r)
     {
         EMIT_LW(REG_AT, field_offset, REG_S0);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-        /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t8_cached_psx_reg == r)
-            t8_cached_psx_reg = -1;
-        if (t9_cached_psx_reg == r)
-            t9_cached_psx_reg = -1;
+        SCRATCH_INVALIDATE_PSX(r);
     }
 }
 
@@ -833,11 +799,7 @@ void emit_materialize_psx_imm(int r, uint32_t value)
     {
         emit_load_imm32(REG_AT, value);
         EMIT_SW(REG_AT, CPU_REG(r), REG_S0);
-        /* cpu.regs[r] changed via AT; invalidate stale scratch entries */
-        if (t8_cached_psx_reg == r)
-            t8_cached_psx_reg = -1;
-        if (t9_cached_psx_reg == r)
-            t9_cached_psx_reg = -1;
+        SCRATCH_INVALIDATE_PSX(r);
     }
 }
 

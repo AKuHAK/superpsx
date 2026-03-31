@@ -41,7 +41,11 @@
 
 /* ---- BCD helpers ---- */
 static uint8_t dec_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
-static int bcd_to_dec(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
+static int bcd_to_dec(uint8_t v) {
+    int hi = v >> 4, lo = v & 0x0F;
+    if (hi > 9 || lo > 9) return 0; /* Invalid BCD → treat as 0 */
+    return hi * 10 + lo;
+}
 
 static uint32_t msf_to_lba(uint8_t mm, uint8_t ss, uint8_t ff)
 {

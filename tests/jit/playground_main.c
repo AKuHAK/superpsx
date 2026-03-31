@@ -235,7 +235,7 @@ extern void Init_Dynarec(void);
 extern void Init_CPU(void);
 extern void Init_Memory(void);
 extern void Init_MemoryLUT(void);
-extern uint32_t psx_abort_pc;
+extern volatile uint32_t psx_abort_pc;
 
 /* Scheduler externs */
 extern uint64_t global_cycles;

@@ -195,7 +195,7 @@ void Helper_Overflow_Exception(void *unused);
 /*=== Exception support for dynarec ===*/
 extern jmp_buf psx_block_jmp;
 extern volatile int psx_block_exception;
-extern uint32_t psx_abort_pc;
+extern volatile uint32_t psx_abort_pc;
 
 /*=== CD-ROM ===*/
 void CDROM_Init(void);

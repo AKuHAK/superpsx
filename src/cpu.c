@@ -14,7 +14,7 @@ R3000CPU cpu;
 /* Exception support for dynarec mid-block exceptions */
 jmp_buf psx_block_jmp;
 volatile int psx_block_exception = 0;
-uint32_t psx_abort_pc = 0;            /* saved exception-handler PC            */
+volatile uint32_t psx_abort_pc = 0;   /* saved exception-handler PC            */
 
 void PSX_Exception(uint32_t cause_code)
 {

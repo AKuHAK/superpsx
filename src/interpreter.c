@@ -401,6 +401,7 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_LWC1: Helper_CU_Exception(cpu.current_pc, 1); branch_state = 0; return 0;
             case OP_LWC2: { /* Load Word to COP2 (GTE data register) */
                 uint32_t addr = cpu.regs[rs] + imm_se;
+                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
                 uint32_t val = ReadWord(addr);
                 GTE_WriteData(&cpu, rt, val);
                 break;
@@ -410,6 +411,7 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_SWC1: Helper_CU_Exception(cpu.current_pc, 1); branch_state = 0; return 0;
             case OP_SWC2: { /* Store Word from COP2 (GTE data register) */
                 uint32_t addr = cpu.regs[rs] + imm_se;
+                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
                 uint32_t val = GTE_ReadData(&cpu, rt);
                 WriteWord(addr, val);
                 break;

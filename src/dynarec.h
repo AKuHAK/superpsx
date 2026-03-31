@@ -694,9 +694,10 @@ uint32_t *compile_block(uint32_t psx_pc);
 uint32_t *dynarec_ensure_block(uint32_t pc, BlockEntry **out_be);
 
 /* ================================================================
- *  Function prototypes — dynarec_insn.c
+ *  Function prototypes — dynarec_insn.c / dynarec_gte.c
  * ================================================================ */
 int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count);
+void emit_gte_instruction(uint32_t opcode, uint32_t psx_pc);
 void debug_mtc0_sr(uint32_t val);
 int BIOS_HLE_A(void);
 int BIOS_HLE_B(void);

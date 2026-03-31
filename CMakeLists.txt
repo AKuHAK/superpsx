@@ -126,6 +126,7 @@ set(SUPERPSX_SOURCES
     src/dynarec_memory.c
     src/dynarec_compile.c
     src/dynarec_insn.c
+    src/dynarec_gte.c
     src/dynarec_run.c
     src/gte.c
     src/cdrom.c
@@ -407,6 +408,7 @@ set(PLAYGROUND_SOURCES
     src/dynarec_memory.c
     src/dynarec_compile.c
     src/dynarec_insn.c
+    src/dynarec_gte.c
     src/dynarec_run.c
     src/interpreter.c
 )
@@ -457,6 +459,7 @@ set(INT_PLAYGROUND_SOURCES
     src/dynarec_memory.c
     src/dynarec_compile.c
     src/dynarec_insn.c
+    src/dynarec_gte.c
     src/dynarec_run.c
 )
 

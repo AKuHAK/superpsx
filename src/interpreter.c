@@ -439,7 +439,8 @@ int run_interpreter_chain(uint64_t deadline) {
             branch_state = 2;
         }
 
-        global_cycles += 2; /* 2 cycles approx per inst? The JIT uses variable cycles. Let's use 2. */
+        { extern uint32_t r3000a_cycle_cost(uint32_t);
+          global_cycles += r3000a_cycle_cost(opcode); }
 
         /* Interrupt check is NOT done here.  The Phase-2 outer loop's
          * sync_hardware_and_interrupts() handles interrupt delivery at

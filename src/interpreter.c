@@ -171,7 +171,7 @@ int run_interpreter_chain(uint64_t deadline) {
             }
         }
 
-        if (cpu.pc & 3) {
+        if (__builtin_expect(cpu.pc & 3, 0)) {
             cpu.cop0[PSX_COP0_BADVADDR] = cpu.pc;
             cpu.pc = cpu.current_pc;
             PSX_Exception(4); /* AdEL */
@@ -347,7 +347,7 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_LB:  if (rt) { cpu.load_delay_reg = rt; cpu.load_delay_val = (int32_t)(int8_t)ReadByte(cpu.regs[rs] + imm_se); } break;
             case OP_LH: {
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 1) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 1, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
                 if (rt) { cpu.load_delay_reg = rt; cpu.load_delay_val = (int32_t)(int16_t)ReadHalf(addr); }
                 break;
             }
@@ -361,14 +361,14 @@ int run_interpreter_chain(uint64_t deadline) {
             }
             case OP_LW: {
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 3, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
                 if (rt) { cpu.load_delay_reg = rt; cpu.load_delay_val = ReadWord(addr); }
                 break;
             }
             case OP_LBU: if (rt) { cpu.load_delay_reg = rt; cpu.load_delay_val = ReadByte(cpu.regs[rs] + imm_se); } break;
             case OP_LHU: {
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 1) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 1, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
                 if (rt) { cpu.load_delay_reg = rt; cpu.load_delay_val = ReadHalf(addr); }
                 break;
             }
@@ -383,14 +383,14 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_SB:  WriteByte(cpu.regs[rs] + imm_se, cpu.regs[rt]); break;
             case OP_SH: {
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 1) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 1, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
                 WriteHalf(addr, cpu.regs[rt]);
                 break;
             }
             case OP_SWL: Helper_SWL(cpu.regs[rs] + imm_se, cpu.regs[rt]); break;
             case OP_SW: {
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 3, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
                 WriteWord(addr, cpu.regs[rt]);
                 break;
             }
@@ -401,7 +401,7 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_LWC1: Helper_CU_Exception(cpu.current_pc, 1); branch_state = 0; return 0;
             case OP_LWC2: { /* Load Word to COP2 (GTE data register) */
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 3, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(4); branch_state = 0; return 0; }
                 uint32_t val = ReadWord(addr);
                 GTE_WriteData(&cpu, rt, val);
                 break;
@@ -411,7 +411,7 @@ int run_interpreter_chain(uint64_t deadline) {
             case OP_SWC1: Helper_CU_Exception(cpu.current_pc, 1); branch_state = 0; return 0;
             case OP_SWC2: { /* Store Word from COP2 (GTE data register) */
                 uint32_t addr = cpu.regs[rs] + imm_se;
-                if (addr & 3) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
+                if (__builtin_expect(addr & 3, 0)) { cpu.cop0[PSX_COP0_BADVADDR] = addr; cpu.pc = cpu.current_pc; PSX_Exception(5); branch_state = 0; return 0; }
                 uint32_t val = GTE_ReadData(&cpu, rt);
                 WriteWord(addr, val);
                 break;
@@ -450,7 +450,7 @@ int run_interpreter_chain(uint64_t deadline) {
          * advances its state machine. */
 
         /* If we hit block abort (exception inside branch delay), exit */
-        if (cpu.block_aborted) {
+        if (__builtin_expect(cpu.block_aborted, 0)) {
             cpu.pc = psx_abort_pc;
             cpu.block_aborted = 0;
             branch_state = 0;

@@ -152,34 +152,6 @@ static inline void Scheduler_RemoveEvent(int event_id)
         sched_recompute_cached();
 }
 
-/* Invoke a scheduled event immediately (e.g. from an IO write handler).
- * Fires the callback with ticks_late = current_cycle - deadline (0 if early),
- * deactivates the event, and recomputes the cached earliest. */
-static inline void Scheduler_InvokeEarly(int event_id, uint64_t current_cycle)
-{
-    if (!sched_events[event_id].active)
-        return;
-    int ticks_late = 0;
-    if (current_cycle > sched_events[event_id].deadline)
-        ticks_late = (int)(current_cycle - sched_events[event_id].deadline);
-    sched_callback_t cb = sched_events[event_id].callback;
-    sched_events[event_id].active = 0;
-    if (event_id == scheduler_earliest_id)
-        sched_recompute_cached();
-    if (cb)
-        cb(ticks_late);
-}
-
-static inline uint64_t Scheduler_NextDeadline(void)
-{
-    return scheduler_cached_earliest;
-}
-
-static inline uint64_t Scheduler_NextDeadlineFast(void)
-{
-    return scheduler_cached_earliest;
-}
-
 static inline void Scheduler_DispatchEvents(uint64_t current_cycle)
 {
     int i;

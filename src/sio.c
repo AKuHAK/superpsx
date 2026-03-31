@@ -29,7 +29,14 @@ static inline void sio_flush_deferred_vblank(void)
         cpu.i_stat |= 1; /* VBlank bit 0 */
         cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
         if (cpu.irq_pending)
+        {
             sched_interrupt_chain = 1;
+            if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
+            {
+                cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
+                cpu.cycles_left = 0;
+            }
+        }
         sio_deferred_vblank = 0;
     }
 }

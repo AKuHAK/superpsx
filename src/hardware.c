@@ -58,7 +58,22 @@ void SignalInterrupt(uint32_t irq)
     cpu.i_stat |= (1 << irq);
     cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
     if (cpu.irq_pending)
+    {
         sched_interrupt_chain = 1;
+        /* Force immediate dispatch: cap cycles_left to 0 so the JIT block
+         * exits at the next BLEZ check after any C-call path that reloads S2
+         * from cpu.cycles_left (memory slow-path, SIO write).  This mirrors
+         * DuckStation's downcount=0 pattern on IRQ assertion.
+         * Only apply during block execution (psx_block_exception==1) to avoid
+         * corrupting cycle accounting between blocks.
+         * cycles_left_correction tracks the trimmed cycles so that
+         * run_jit_chain's cycles_taken computation stays accurate. */
+        if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
+        {
+            cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
+            cpu.cycles_left = 0;
+        }
+    }
 }
 
 uint32_t ReadHardware(uint32_t phys)
@@ -192,7 +207,14 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             }
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
             if (cpu.irq_pending)
+            {
                 sched_interrupt_chain = 1;
+                if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
+                {
+                    cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
+                    cpu.cycles_left = 0;
+                }
+            }
             return;
         }
         if (phys == 0x1F801074)
@@ -200,7 +222,14 @@ void WriteHardware(uint32_t phys, uint32_t data, int size)
             cpu.i_mask = data & 0xFFFF07FF;
             cpu.irq_pending = (cpu.i_stat & cpu.i_mask & 0x7FF) != 0;
             if (cpu.irq_pending)
+            {
                 sched_interrupt_chain = 1;
+                if (psx_block_exception && (int32_t)cpu.cycles_left > 0)
+                {
+                    cpu.cycles_left_correction += (int32_t)cpu.cycles_left;
+                    cpu.cycles_left = 0;
+                }
+            }
             DLOG("I_MASK = %08X (VSync=%d CD=%d Timer0=%d Timer1=%d Timer2=%d)\n",
                  (unsigned)cpu.i_mask, (int)(cpu.i_mask & 1), (int)((cpu.i_mask >> 2) & 1),
                  (int)((cpu.i_mask >> 4) & 1), (int)((cpu.i_mask >> 5) & 1), (int)((cpu.i_mask >> 6) & 1));

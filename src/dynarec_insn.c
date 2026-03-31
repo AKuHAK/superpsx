@@ -113,6 +113,50 @@ int BIOS_HLE_C(void)
 }
 
 /* ================================================================
+ * COP Usable (CU) exception check — shared helper
+ * ================================================================
+ * Emit inline SR bit test for COPn.  If CUn is disabled, the cold
+ * path calls Helper_CU_Exception and lets the abort check handle it.
+ *
+ * Critical invariant: emit_call_c() resets smrv_known_ram and
+ * align_known_mask to defaults, and clears dyn_dirty_mask.  Those
+ * changes only take effect at runtime when the exception fires, so
+ * the compile-time mirrors must be restored for the normal path.
+ */
+static void emit_cu_check(int cop_num, uint32_t psx_pc)
+{
+    flush_dirty_consts();
+    reg_cache_invalidate();
+
+    /* Load SR and extract CUn bit (bit 28+n) */
+    EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
+    emit(MK_R(0, 0, REG_T8, REG_T8, 28 + cop_num, 0x02)); /* SRL */
+    if (cop_num < 3)
+        emit(MK_I(0x0C, REG_T8, REG_T8, 1));               /* ANDI */
+
+    /* BNE T8, $zero, @skip — CUn enabled, no exception */
+    uint32_t *skip = code_ptr;
+    emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
+    EMIT_NOP();
+
+    /* Cold path: trigger CU exception */
+    emit_load_imm32(REG_A0, psx_pc);
+    emit_load_imm32(REG_A1, cop_num);
+    {
+        uint8_t  saved_dirty = dyn_dirty_mask;
+        uint32_t saved_smrv  = smrv_known_ram;
+        uint32_t saved_align = align_known_mask;
+        emit_call_c((uint32_t)Helper_CU_Exception);
+        dyn_dirty_mask  = saved_dirty;
+        smrv_known_ram  = saved_smrv;
+        align_known_mask = saved_align;
+    }
+
+    /* Patch BNE offset */
+    *skip = (*skip & 0xFFFF0000) | ((uint32_t)(code_ptr - skip - 1) & 0xFFFF);
+}
+
+/* ================================================================
  * GTE inline helper emitters
  * ================================================================
  * These emit common GTE code sequences shared by multiple ops.
@@ -1775,24 +1819,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP1 */
     case 0x11:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 1);
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 29, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_patch_1 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_patch_1 = (*skip_patch_1 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_patch_1 - 1) & 0xFFFF);
+        emit_cu_check(1, psx_pc);
         break;
     }
 
@@ -1800,26 +1827,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     case 0x12:
     {
         if (!block_cu2_hoisted)
-        {
-            flush_dirty_consts(); /* Flush before COP-usable conditional */
-            reg_cache_invalidate();
-            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-            uint32_t *skip_cu2 = code_ptr;
-            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-            EMIT_NOP();
-            emit_load_imm32(REG_A0, psx_pc);
-            emit_load_imm32(REG_A1, 2);
-            {
-                uint8_t saved_dirty = dyn_dirty_mask;
-                uint32_t saved_align_cu = align_known_mask;
-                emit_call_c((uint32_t)Helper_CU_Exception);
-                dyn_dirty_mask = saved_dirty;
-                align_known_mask = saved_align_cu;
-            }
-            *skip_cu2 = (*skip_cu2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu2 - 1) & 0xFFFF);
-        }
+            emit_cu_check(2, psx_pc);
 
         if (total_instructions < 20000000)
         {
@@ -3002,23 +3010,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* COP3 */
     case 0x13:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
-        uint32_t *skip_cu3 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 3);
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_cu3 = (*skip_cu3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_cu3 - 1) & 0xFFFF);
+        emit_cu_check(3, psx_pc);
         break;
     }
 
@@ -3082,24 +3074,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC0 */
     case 0x30:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 28, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_lwc0 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 0);
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_lwc0 = (*skip_lwc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc0 - 1) & 0xFFFF);
+        emit_cu_check(0, psx_pc);
         break;
     }
 
@@ -3107,26 +3082,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     case 0x32:
     {
         if (!block_cu2_hoisted)
-        {
-            flush_dirty_consts(); /* Flush before COP-usable conditional */
-            reg_cache_invalidate();
-            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-            uint32_t *skip_lwc2 = code_ptr;
-            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-            EMIT_NOP();
-            emit_load_imm32(REG_A0, psx_pc);
-            emit_load_imm32(REG_A1, 2);
-            {
-                uint8_t saved_dirty = dyn_dirty_mask;
-                uint32_t saved_align_cu = align_known_mask;
-                emit_call_c((uint32_t)Helper_CU_Exception);
-                dyn_dirty_mask = saved_dirty;
-                align_known_mask = saved_align_cu;
-            }
-            *skip_lwc2 = (*skip_lwc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc2 - 1) & 0xFFFF);
-        }
+            emit_cu_check(2, psx_pc);
 
         /* Memory read via LUT fast path (result in V0), then GTE write */
         {
@@ -3187,47 +3143,14 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* LWC3 */
     case 0x33:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
-        uint32_t *skip_lwc3 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 3);
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_lwc3 = (*skip_lwc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_lwc3 - 1) & 0xFFFF);
+        emit_cu_check(3, psx_pc);
         break;
     }
 
     /* SWC0 */
     case 0x38:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 28, 0x02));
-        emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-        uint32_t *skip_swc0 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 0);
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_swc0 = (*skip_swc0 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc0 - 1) & 0xFFFF);
+        emit_cu_check(0, psx_pc);
         break;
     }
 
@@ -3235,26 +3158,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     case 0x3A:
     {
         if (!block_cu2_hoisted)
-        {
-            flush_dirty_consts(); /* Flush before COP-usable conditional */
-            reg_cache_invalidate();
-            EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-            emit(MK_R(0, 0, REG_T8, REG_T8, 30, 0x02));
-            emit(MK_I(0x0C, REG_T8, REG_T8, 1));
-            uint32_t *skip_swc2 = code_ptr;
-            emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-            EMIT_NOP();
-            emit_load_imm32(REG_A0, psx_pc);
-            emit_load_imm32(REG_A1, 2);
-            {
-                uint8_t saved_dirty = dyn_dirty_mask;
-                uint32_t saved_align_cu = align_known_mask;
-                emit_call_c((uint32_t)Helper_CU_Exception);
-                dyn_dirty_mask = saved_dirty;
-                align_known_mask = saved_align_cu;
-            }
-            *skip_swc2 = (*skip_swc2 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc2 - 1) & 0xFFFF);
-        }
+            emit_cu_check(2, psx_pc);
 
         /* Inline GTE read for simple data registers (same as MFC2 P3) */
         {
@@ -3371,23 +3275,7 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
     /* SWC3 */
     case 0x3B:
     {
-        flush_dirty_consts(); /* Flush before COP-usable conditional */
-        reg_cache_invalidate();
-        EMIT_LW(REG_T8, CPU_COP0(PSX_COP0_SR), REG_S0);
-        emit(MK_R(0, 0, REG_T8, REG_T8, 31, 0x02));
-        uint32_t *skip_swc3 = code_ptr;
-        emit(MK_I(0x05, REG_T8, REG_ZERO, 0));
-        EMIT_NOP();
-        emit_load_imm32(REG_A0, psx_pc);
-        emit_load_imm32(REG_A1, 3);
-        {
-            uint8_t saved_dirty = dyn_dirty_mask;
-            uint32_t saved_align_cu = align_known_mask;
-            emit_call_c((uint32_t)Helper_CU_Exception);
-            dyn_dirty_mask = saved_dirty;
-            align_known_mask = saved_align_cu;
-        }
-        *skip_swc3 = (*skip_swc3 & 0xFFFF0000) | ((uint32_t)(code_ptr - skip_swc3 - 1) & 0xFFFF);
+        emit_cu_check(3, psx_pc);
         break;
     }
 

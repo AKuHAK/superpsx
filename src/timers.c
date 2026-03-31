@@ -524,24 +524,9 @@ static void Timer_ScheduleOne(int t)
     Scheduler_ScheduleEvent(SCHED_EVENT_TIMER0 + t, deadline, timer_callbacks[t]);
 }
 
-static void Timer_FireEvent(int t)
-{
-    if (t < 0 || t > 2)
-        return;
-    /*
-     * ScheduleOne immediately calls SyncValue, which now correctly
-     * adds the elapsed ticks via exact math, wraps target/overflow using
-     * exact subtraction, triggers SignalInterrupt directly, and preserves
-     * the cycle residue (last_sync_cycle).
-     * By not manually stomping last_sync_cycle to global_cycles, we eliminate
-     * the cumulative scheduling drift.
-     */
-    Timer_ScheduleOne(t);
-}
-
-static void Timer_Callback0(int ticks_late) { (void)ticks_late; Timer_FireEvent(0); }
-static void Timer_Callback1(int ticks_late) { (void)ticks_late; Timer_FireEvent(1); }
-static void Timer_Callback2(int ticks_late) { (void)ticks_late; Timer_FireEvent(2); }
+static void Timer_Callback0(int ticks_late) { (void)ticks_late; Timer_ScheduleOne(0); }
+static void Timer_Callback1(int ticks_late) { (void)ticks_late; Timer_ScheduleOne(1); }
+static void Timer_Callback2(int ticks_late) { (void)ticks_late; Timer_ScheduleOne(2); }
 
 uint32_t Timers_Read(uint32_t addr)
 {

@@ -146,8 +146,13 @@ static void adsr_reload_params(SPU_Voice *v)
     uint16_t lo = v->adsr_lo;
     uint16_t hi = v->adsr_hi;
 
-    /* Sustain level threshold: same for all phases (from adsr_lo bits 3-0) */
+    /* Sustain level threshold: same for all phases (from adsr_lo bits 3-0)
+     * psx-spx: Level=(N+1)*800h. Cap to 0x7FFF so vol never exceeds the
+     * valid envelope range — otherwise ENVX reads as 0 and games think
+     * the voice is dead (e.g. Crash Bandicoot intro scream). */
     v->adsr_sl = (int32_t)(((lo & 0x0F) + 1) << 11);
+    if (v->adsr_sl > 0x7FFF)
+        v->adsr_sl = 0x7FFF;
 
     int shift, step_idx, is_exp, is_dec;
 
@@ -189,9 +194,11 @@ static void adsr_reload_params(SPU_Voice *v)
     int ci_shift = shift - 11;
     v->adsr_ci = (ci_shift > 0) ? (0x8000 >> ci_shift) : 0x8000;
 
-    /* BaseStep = (7-step_idx) << max(0, 11-shift); apply direction */
+    /* BaseStep: psx-spx says increase="+7,+6,+5,+4", decrease="-8,-7,-6,-5"
+     * for step_idx 0..3.  So increase uses (7-idx), decrease uses (8-idx). */
     int su = 11 - shift;
-    int32_t base = (su > 0) ? ((7 - step_idx) << su) : (7 - step_idx);
+    int raw_step = is_dec ? (8 - step_idx) : (7 - step_idx);
+    int32_t base = (su > 0) ? (raw_step << su) : raw_step;
     v->adsr_step = is_dec ? -base : base;
     v->adsr_exp = (int8_t)is_exp;
     v->adsr_inc = (int8_t)(!is_dec);
@@ -478,7 +485,7 @@ static void process_key_on(uint32_t kon)
             v->adsr_level = 0;
             adsr_reload_params(v); /* Cache ADSR tick params for Attack phase */
             endx &= ~(1 << i);     /* Clear ENDX bit on Key On */
-            DLOG("Voice %d Key On: addr=0x%05" PRIX32 " pitch=0x%04X vol=%d/%d adsr_lo=0x%04X adsr_hi=0x%04X\n",
+            DLOG("KON v%d: addr=0x%05" PRIX32 " pitch=0x%04X vol=%d/%d adsr=%04X/%04X\n",
                  i, v->current_addr, v->pitch, v->vol_l, v->vol_r, v->adsr_lo, v->adsr_hi);
         }
     }

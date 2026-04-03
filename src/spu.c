@@ -1049,6 +1049,18 @@ void SPU_CatchUp(void)
         return;
 
     int target = (int)((now - spu_frame_start_cycle) / CYCLES_PER_SAMPLE);
+
+    /* If the current frame's audio is fully generated but more cycles have
+     * elapsed (e.g. KON arriving during a long ISR after VBlank), flush the
+     * completed frame and advance spu_frame_start_cycle so new voices can
+     * produce samples immediately instead of waiting for VBlank. */
+    if (target > SAMPLES_PER_FRAME && spu_samples_generated >= SAMPLES_PER_FRAME)
+    {
+        SPU_FlushAudio(); /* sends current frame to audio backend + resets gen=0 */
+        spu_frame_start_cycle += (uint64_t)SAMPLES_PER_FRAME * CYCLES_PER_SAMPLE;
+        target = (int)((now - spu_frame_start_cycle) / CYCLES_PER_SAMPLE);
+    }
+
     if (target > SAMPLES_PER_FRAME)
         target = SAMPLES_PER_FRAME;
 

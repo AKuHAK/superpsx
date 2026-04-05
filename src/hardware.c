@@ -8,6 +8,7 @@
 #include "spu.h"
 #include "gpu_state.h"
 #include "mdec.h"
+#include "config.h"
 
 #ifdef LOG_TAG
 #undef LOG_TAG
@@ -173,8 +174,12 @@ uint32_t ReadHardware(uint32_t phys)
     /* PSX I/O bus penalty: hardware register reads are slower than RAM due
      * to bus wait states (COM_DELAY register).  Deduct from cpu.cycles_left
      * so the JIT's cycle tracking reflects the bus stall.  The mem_slow
-     * trampoline reloads S2 from cpu.cycles_left after the C call. */
-    cpu.cycles_left -= 1;
+     * trampoline reloads S2 from cpu.cycles_left after the C call.
+     * Skip in interpreter mode: the interpreter manages global_cycles
+     * directly and never initialises cpu.cycles_left, so decrementing it
+     * would corrupt EFFECTIVE_CYCLES (which uses initial - current). */
+    if (!psx_config.interpreter)
+        cpu.cycles_left -= 1;
 
     return result;
 }

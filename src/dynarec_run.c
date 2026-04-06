@@ -123,6 +123,7 @@ uint64_t stat_blocks_executed = 0;
 uint64_t stat_total_cycles = 0;
 uint64_t stat_total_native_instrs = 0;
 uint64_t stat_total_psx_instrs = 0;
+uint64_t stat_lui_scan_seeds = 0;
 #endif
 
 /* Scheduler and Performance state */
@@ -187,6 +188,7 @@ void dynarec_print_stats(void)
     printf("  Cache flushes   : %llu\n", (unsigned long long)stat_cache_flushes);
     printf("  Cache collisions: %llu\n", (unsigned long long)stat_cache_collisions);
     printf("  PSX cycles      : %llu\n", (unsigned long long)stat_total_cycles);
+    printf("  LUI scan seeds  : %llu\n", (unsigned long long)stat_lui_scan_seeds);
     printf("  DBL patches     : %llu\n", (unsigned long long)stat_dbl_patches);
     printf("  DBL pending     : %d\n", patch_sites_count);
     fflush(stdout);

@@ -327,6 +327,7 @@ extern uint64_t stat_blocks_executed;
 extern uint64_t stat_total_cycles;
 extern uint64_t stat_total_native_instrs;
 extern uint64_t stat_total_psx_instrs;
+extern uint64_t stat_lui_scan_seeds;
 #endif
 
 #ifdef ENABLE_HOST_LOG

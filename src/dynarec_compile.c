@@ -894,6 +894,154 @@ void emit_branch_epilogue(uint32_t target_pc)
     emit_direct_link(target_pc);
 }
 
+/* ================================================================
+ *  Backwards LUI Scan — Cross-Block Constant Propagation
+ *
+ *  Scans backwards from the block entry in PSX memory to find LUI
+ *  instructions that set registers to known constants.  If a register
+ *  is set by LUI and not modified between the LUI and the block entry,
+ *  it is seeded as const in vregs[] before compilation begins.
+ *
+ *  This enables the JIT to detect const I/O addresses in polling loops
+ *  where the LUI is outside the loop block (the common pattern).
+ *
+ *  Example:
+ *    0x100: lui $t0, 0x1F80    ; ← found by backwards scan
+ *    0x104: lw  $v0, 0x1814($t0) ; block starts here, $t0 now const
+ *    0x108: andi $v0, 0x400
+ *    0x10C: bnez $v0, 0x104
+ *    0x110: nop
+ *
+ *  Safety: Only seeds consts when the scanned instructions form a
+ *  straight-line sequence (no branches, jumps, or calls that could
+ *  introduce alternative entry paths with different register values).
+ * ================================================================ */
+static void scan_backwards_for_lui(uint32_t psx_pc, const uint32_t *psx_code,
+                                    const BlockScanResult *scan)
+{
+    /* Only scan if we have valid memory before the block.
+     * psx_code points into psx_ram or psx_bios — we must not read
+     * before the start of the underlying buffer. */
+    uint32_t phys = psx_pc & 0x1FFFFFFF;
+    int max_back = 8;
+
+    if (phys < PSX_RAM_SIZE)
+    {
+        /* RAM block — limit by distance to start of RAM */
+        if (phys < (uint32_t)(max_back * 4))
+            max_back = (int)(phys / 4);
+    }
+    else if (phys >= 0x1FC00000 && phys < 0x1FC00000 + PSX_BIOS_SIZE)
+    {
+        /* BIOS block — limit by distance to start of BIOS */
+        uint32_t bios_offset = phys - 0x1FC00000;
+        if (bios_offset < (uint32_t)(max_back * 4))
+            max_back = (int)(bios_offset / 4);
+    }
+    else
+    {
+        /* IO code buffer or unknown region — don't scan */
+        return;
+    }
+    if (max_back == 0)
+        return;
+
+    /* Track which registers are written in the scanned window.
+     * If a register is written AFTER the LUI (closer to block entry),
+     * the LUI value is overwritten and can't be trusted. */
+    uint32_t written_mask = 0;
+
+    /* Also track which registers are written WITHIN the block (from scan pass).
+     * If the block itself writes a register, the seeded const would be
+     * overwritten anyway, so skip seeding it (avoids stale consts). */
+    uint32_t block_writes = scan->regs_written_mask;
+
+    for (int i = 1; i <= max_back; i++)
+    {
+        uint32_t insn = psx_code[-i];
+        uint32_t op = insn >> 26;
+
+        /* Stop at branches, jumps, calls — can't trust register state across
+         * control flow changes (another path might set different values). */
+        if (op == 0x02 || op == 0x03)  /* J, JAL */
+            break;
+        if (op == 0x01)  /* BLTZ/BGEZ/BLTZAL/BGEZAL family */
+            break;
+        if (op == 0x04 || op == 0x05)  /* BEQ, BNE */
+            break;
+        if (op == 0x06 || op == 0x07)  /* BLEZ, BGTZ */
+            break;
+        if (op == 0x00)  /* SPECIAL */
+        {
+            uint32_t func = insn & 0x3F;
+            if (func == 0x08 || func == 0x09)  /* JR, JALR */
+                break;
+            if (func == 0x0C || func == 0x0D)  /* SYSCALL, BREAK */
+                break;
+            /* Track destination register for R-type ops */
+            int rd = (insn >> 11) & 0x1F;
+            if (rd != 0)
+                written_mask |= (1u << rd);
+            continue;
+        }
+
+        if (op == 0x0F)  /* LUI */
+        {
+            int rt = (insn >> 16) & 0x1F;
+            if (rt == 0)
+                continue;
+            /* Only seed if the register wasn't written between LUI and block entry,
+             * AND the block itself doesn't write it (otherwise const is wasted). */
+            if (!(written_mask & (1u << rt)) && !(block_writes & (1u << rt)))
+            {
+                uint32_t val = (insn & 0xFFFF) << 16;
+                mark_vreg_const(rt, val);
+#ifdef ENABLE_DYNAREC_STATS
+                stat_lui_scan_seeds++;
+#endif
+            }
+            /* LUI writes rt — mark to prevent further back LUIs from being used */
+            written_mask |= (1u << rt);
+            continue;
+        }
+
+        /* I-type instructions: track destination register (rt) */
+        if (op >= 0x08 && op <= 0x0E)  /* ADDI, ADDIU, SLTI, SLTIU, ANDI, ORI, XORI */
+        {
+            int rt = (insn >> 16) & 0x1F;
+            if (rt != 0)
+                written_mask |= (1u << rt);
+            continue;
+        }
+        if (op >= 0x20 && op <= 0x26)  /* LB, LH, LWL, LW, LBU, LHU, LWR */
+        {
+            int rt = (insn >> 16) & 0x1F;
+            if (rt != 0)
+                written_mask |= (1u << rt);
+            continue;
+        }
+        if (op >= 0x30 && op <= 0x32)  /* LWC0, LWC1, LWC2 — don't write GPRs but skip */
+            continue;
+        if (op >= 0x28 && op <= 0x2E)  /* SB, SH, SWL, SW, SWR — stores don't write GPRs */
+            continue;
+        if (op >= 0x10 && op <= 0x13)  /* COP0-COP3 */
+        {
+            /* MFC0/MFC2 write rt */
+            uint32_t fmt = (insn >> 21) & 0x1F;
+            if (fmt == 0x00)  /* MFC */
+            {
+                int rt = (insn >> 16) & 0x1F;
+                if (rt != 0)
+                    written_mask |= (1u << rt);
+            }
+            continue;
+        }
+
+        /* Unknown opcode — stop scanning to be safe */
+        break;
+    }
+}
+
 /* ---- Compile a basic block ---- */
 uint32_t *compile_block(uint32_t psx_pc)
 {
@@ -969,6 +1117,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     overflow_cold_reset();
     BlockScanResult scan;
     block_scan(psx_code, SCAN_MAX_INSNS, &scan);
+    scan_backwards_for_lui(psx_pc, psx_code, &scan);
     block_pinned_dirty_mask = scan.pinned_written_mask;
     emit_block_prologue();
     dyn_assign_slots(&scan);

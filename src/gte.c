@@ -1445,42 +1445,63 @@ float vu0_rt_trans[4] __attribute__((aligned(16)));
 
 void vu0_refresh_rt_matrix(R3000CPU *cpu)
 {
-    /* Extract rotation matrix (9 × int16) */
-    int16_t r11 = lo16(C(c_RT11RT12)), r12 = hi16(C(c_RT11RT12));
-    int16_t r13 = lo16(C(c_RT13RT21)), r21 = hi16(C(c_RT13RT21));
-    int16_t r22 = lo16(C(c_RT22RT23)), r23 = hi16(C(c_RT22RT23));
-    int16_t r31 = lo16(C(c_RT31RT32)), r32 = hi16(C(c_RT31RT32));
-    int16_t r33 = lo16(C(c_RT33));
+    /* Build column-major int32 arrays for VU0 VITOF12 conversion.
+     * VITOF12 converts int32 → float and divides by 4096 in one op,
+     * replacing 9× (MTC1 + CVT.S.W + MUL.S) scalar FPU chains. */
+    int32_t icol1[4] __attribute__((aligned(16)));
+    int32_t icol2[4] __attribute__((aligned(16)));
+    int32_t icol3[4] __attribute__((aligned(16)));
+    int32_t itrans[4] __attribute__((aligned(16)));
 
-    /* Pre-scale matrix by 1/4096 so VU0 result gives MAC directly (sf=1) */
-    const float s = 1.0f / 4096.0f;
+    uint32_t c0 = C(c_RT11RT12), c1 = C(c_RT13RT21);
+    uint32_t c2 = C(c_RT22RT23), c3 = C(c_RT31RT32);
+    uint32_t c4 = C(c_RT33);
 
-    /* Column-major layout for vmulax/vmadday/vmaddz broadcast pattern:
-     *   col[i] = { row0_col_i, row1_col_i, row2_col_i, 0 }
-     * vmulax  ACC, col1, vf_vertex.x   => ACC.xyz = col1.xyz * VX
-     * vmadday ACC, col2, vf_vertex.y   => ACC.xyz += col2.xyz * VY
-     * vmaddz  res, col3, vf_vertex.z   => res.xyz = ACC.xyz + col3.xyz * VZ
-     * vadd    res, res, trans           => res.xyz += {TRX, TRY, TRZ}         */
-    vu0_rt_col1[0] = (float)r11 * s;
-    vu0_rt_col1[1] = (float)r21 * s;
-    vu0_rt_col1[2] = (float)r31 * s;
-    vu0_rt_col1[3] = 0.0f;
+    /* Column 1: {R11, R21, R31, 0} */
+    icol1[0] = (int16_t)c0;        /* R11 = lo16(c0) */
+    icol1[1] = (int16_t)(c1 >> 16); /* R21 = hi16(c1) */
+    icol1[2] = (int16_t)c3;        /* R31 = lo16(c3) */
+    icol1[3] = 0;
 
-    vu0_rt_col2[0] = (float)r12 * s;
-    vu0_rt_col2[1] = (float)r22 * s;
-    vu0_rt_col2[2] = (float)r32 * s;
-    vu0_rt_col2[3] = 0.0f;
+    /* Column 2: {R12, R22, R32, 0} */
+    icol2[0] = (int16_t)(c0 >> 16); /* R12 = hi16(c0) */
+    icol2[1] = (int16_t)c2;        /* R22 = lo16(c2) */
+    icol2[2] = (int16_t)(c3 >> 16); /* R32 = hi16(c3) */
+    icol2[3] = 0;
 
-    vu0_rt_col3[0] = (float)r13 * s;
-    vu0_rt_col3[1] = (float)r23 * s;
-    vu0_rt_col3[2] = (float)r33 * s;
-    vu0_rt_col3[3] = 0.0f;
+    /* Column 3: {R13, R23, R33, 0} */
+    icol3[0] = (int16_t)c1;        /* R13 = lo16(c1) */
+    icol3[1] = (int16_t)(c2 >> 16); /* R23 = hi16(c2) */
+    icol3[2] = (int16_t)c4;        /* R33 = lo16(c4) */
+    icol3[3] = 0;
 
-    /* Translation: NOT pre-scaled, added directly after multiply */
-    vu0_rt_trans[0] = (float)(int32_t)C(c_TRX);
-    vu0_rt_trans[1] = (float)(int32_t)C(c_TRY);
-    vu0_rt_trans[2] = (float)(int32_t)C(c_TRZ);
-    vu0_rt_trans[3] = 0.0f;
+    /* Translation: {TRX, TRY, TRZ, 0} — no scaling */
+    itrans[0] = (int32_t)C(c_TRX);
+    itrans[1] = (int32_t)C(c_TRY);
+    itrans[2] = (int32_t)C(c_TRZ);
+    itrans[3] = 0;
+
+    /* VU0 VITOF12: int32 → float / 4096  (rotation)
+     * VU0 VITOF0:  int32 → float          (translation) */
+    __asm__ __volatile__(
+        "lqc2    $vf1, 0(%[ic1])\n\t"
+        "lqc2    $vf2, 0(%[ic2])\n\t"
+        "lqc2    $vf3, 0(%[ic3])\n\t"
+        "lqc2    $vf4, 0(%[itr])\n\t"
+        "vitof12.xyzw $vf1, $vf1\n\t"
+        "vitof12.xyzw $vf2, $vf2\n\t"
+        "vitof12.xyzw $vf3, $vf3\n\t"
+        "vitof0.xyzw  $vf4, $vf4\n\t"
+        "sqc2    $vf1, 0(%[oc1])\n\t"
+        "sqc2    $vf2, 0(%[oc2])\n\t"
+        "sqc2    $vf3, 0(%[oc3])\n\t"
+        "sqc2    $vf4, 0(%[otr])\n\t"
+        : /* no outputs */
+        : [ic1] "r"(icol1), [ic2] "r"(icol2), [ic3] "r"(icol3), [itr] "r"(itrans),
+          [oc1] "r"(vu0_rt_col1), [oc2] "r"(vu0_rt_col2),
+          [oc3] "r"(vu0_rt_col3), [otr] "r"(vu0_rt_trans)
+        : "memory"
+    );
 
     vu0_matrix_dirty &= ~0x01; /* RT clean */
 }
@@ -1621,25 +1642,44 @@ float vu0_lt_col3[4] __attribute__((aligned(16)));
 
 void vu0_refresh_lt_matrix(R3000CPU *cpu)
 {
-    int16_t l11 = lo16(C(c_L11L12)), l12 = hi16(C(c_L11L12));
-    int16_t l13 = lo16(C(c_L13L21)), l21 = hi16(C(c_L13L21));
-    int16_t l22 = lo16(C(c_L22L23)), l23 = hi16(C(c_L22L23));
-    int16_t l31 = lo16(C(c_L31L32)), l32 = hi16(C(c_L31L32));
-    int16_t l33 = lo16(C(c_L33));
+    int32_t icol1[4] __attribute__((aligned(16)));
+    int32_t icol2[4] __attribute__((aligned(16)));
+    int32_t icol3[4] __attribute__((aligned(16)));
 
-    const float s = 1.0f / 4096.0f;
-    vu0_lt_col1[0] = (float)l11 * s;
-    vu0_lt_col1[1] = (float)l21 * s;
-    vu0_lt_col1[2] = (float)l31 * s;
-    vu0_lt_col1[3] = 0.0f;
-    vu0_lt_col2[0] = (float)l12 * s;
-    vu0_lt_col2[1] = (float)l22 * s;
-    vu0_lt_col2[2] = (float)l32 * s;
-    vu0_lt_col2[3] = 0.0f;
-    vu0_lt_col3[0] = (float)l13 * s;
-    vu0_lt_col3[1] = (float)l23 * s;
-    vu0_lt_col3[2] = (float)l33 * s;
-    vu0_lt_col3[3] = 0.0f;
+    uint32_t c0 = C(c_L11L12), c1 = C(c_L13L21);
+    uint32_t c2 = C(c_L22L23), c3 = C(c_L31L32);
+    uint32_t c4 = C(c_L33);
+
+    icol1[0] = (int16_t)c0;         /* L11 */
+    icol1[1] = (int16_t)(c1 >> 16); /* L21 */
+    icol1[2] = (int16_t)c3;         /* L31 */
+    icol1[3] = 0;
+
+    icol2[0] = (int16_t)(c0 >> 16); /* L12 */
+    icol2[1] = (int16_t)c2;         /* L22 */
+    icol2[2] = (int16_t)(c3 >> 16); /* L32 */
+    icol2[3] = 0;
+
+    icol3[0] = (int16_t)c1;         /* L13 */
+    icol3[1] = (int16_t)(c2 >> 16); /* L23 */
+    icol3[2] = (int16_t)c4;         /* L33 */
+    icol3[3] = 0;
+
+    __asm__ __volatile__(
+        "lqc2    $vf1, 0(%[ic1])\n\t"
+        "lqc2    $vf2, 0(%[ic2])\n\t"
+        "lqc2    $vf3, 0(%[ic3])\n\t"
+        "vitof12.xyzw $vf1, $vf1\n\t"
+        "vitof12.xyzw $vf2, $vf2\n\t"
+        "vitof12.xyzw $vf3, $vf3\n\t"
+        "sqc2    $vf1, 0(%[oc1])\n\t"
+        "sqc2    $vf2, 0(%[oc2])\n\t"
+        "sqc2    $vf3, 0(%[oc3])\n\t"
+        : /* no outputs */
+        : [ic1] "r"(icol1), [ic2] "r"(icol2), [ic3] "r"(icol3),
+          [oc1] "r"(vu0_lt_col1), [oc2] "r"(vu0_lt_col2), [oc3] "r"(vu0_lt_col3)
+        : "memory"
+    );
 
     vu0_matrix_dirty &= ~0x02; /* LT clean */
 }
@@ -1657,25 +1697,44 @@ float vu0_lc_col3[4] __attribute__((aligned(16)));
 
 void vu0_refresh_lc_matrix(R3000CPU *cpu)
 {
-    int16_t lr1 = lo16(C(c_LR1LR2)), lr2 = hi16(C(c_LR1LR2));
-    int16_t lr3 = lo16(C(c_LR3LG1)), lg1 = hi16(C(c_LR3LG1));
-    int16_t lg2 = lo16(C(c_LG2LG3)), lg3 = hi16(C(c_LG2LG3));
-    int16_t lb1 = lo16(C(c_LB1LB2)), lb2 = hi16(C(c_LB1LB2));
-    int16_t lb3 = lo16(C(c_LB3));
+    int32_t icol1[4] __attribute__((aligned(16)));
+    int32_t icol2[4] __attribute__((aligned(16)));
+    int32_t icol3[4] __attribute__((aligned(16)));
 
-    const float s = 1.0f / 4096.0f;
-    vu0_lc_col1[0] = (float)lr1 * s;
-    vu0_lc_col1[1] = (float)lg1 * s;
-    vu0_lc_col1[2] = (float)lb1 * s;
-    vu0_lc_col1[3] = 0.0f;
-    vu0_lc_col2[0] = (float)lr2 * s;
-    vu0_lc_col2[1] = (float)lg2 * s;
-    vu0_lc_col2[2] = (float)lb2 * s;
-    vu0_lc_col2[3] = 0.0f;
-    vu0_lc_col3[0] = (float)lr3 * s;
-    vu0_lc_col3[1] = (float)lg3 * s;
-    vu0_lc_col3[2] = (float)lb3 * s;
-    vu0_lc_col3[3] = 0.0f;
+    uint32_t c0 = C(c_LR1LR2), c1 = C(c_LR3LG1);
+    uint32_t c2 = C(c_LG2LG3), c3 = C(c_LB1LB2);
+    uint32_t c4 = C(c_LB3);
+
+    icol1[0] = (int16_t)c0;         /* LR1 */
+    icol1[1] = (int16_t)(c1 >> 16); /* LG1 */
+    icol1[2] = (int16_t)c3;         /* LB1 */
+    icol1[3] = 0;
+
+    icol2[0] = (int16_t)(c0 >> 16); /* LR2 */
+    icol2[1] = (int16_t)c2;         /* LG2 */
+    icol2[2] = (int16_t)(c3 >> 16); /* LB2 */
+    icol2[3] = 0;
+
+    icol3[0] = (int16_t)c1;         /* LR3 */
+    icol3[1] = (int16_t)(c2 >> 16); /* LG3 */
+    icol3[2] = (int16_t)c4;         /* LB3 */
+    icol3[3] = 0;
+
+    __asm__ __volatile__(
+        "lqc2    $vf1, 0(%[ic1])\n\t"
+        "lqc2    $vf2, 0(%[ic2])\n\t"
+        "lqc2    $vf3, 0(%[ic3])\n\t"
+        "vitof12.xyzw $vf1, $vf1\n\t"
+        "vitof12.xyzw $vf2, $vf2\n\t"
+        "vitof12.xyzw $vf3, $vf3\n\t"
+        "sqc2    $vf1, 0(%[oc1])\n\t"
+        "sqc2    $vf2, 0(%[oc2])\n\t"
+        "sqc2    $vf3, 0(%[oc3])\n\t"
+        : /* no outputs */
+        : [ic1] "r"(icol1), [ic2] "r"(icol2), [ic3] "r"(icol3),
+          [oc1] "r"(vu0_lc_col1), [oc2] "r"(vu0_lc_col2), [oc3] "r"(vu0_lc_col3)
+        : "memory"
+    );
 
     vu0_matrix_dirty &= ~0x08; /* LC clean */
 }
@@ -1691,10 +1750,20 @@ float vu0_bk_trans[4] __attribute__((aligned(16)));
 
 void vu0_refresh_bk_trans(R3000CPU *cpu)
 {
-    vu0_bk_trans[0] = (float)(int32_t)C(c_RBK);
-    vu0_bk_trans[1] = (float)(int32_t)C(c_GBK);
-    vu0_bk_trans[2] = (float)(int32_t)C(c_BBK);
-    vu0_bk_trans[3] = 0.0f;
+    int32_t ibk[4] __attribute__((aligned(16)));
+    ibk[0] = (int32_t)C(c_RBK);
+    ibk[1] = (int32_t)C(c_GBK);
+    ibk[2] = (int32_t)C(c_BBK);
+    ibk[3] = 0;
+
+    __asm__ __volatile__(
+        "lqc2    $vf1, 0(%[src])\n\t"
+        "vitof0.xyzw $vf1, $vf1\n\t"
+        "sqc2    $vf1, 0(%[dst])\n\t"
+        : /* no outputs */
+        : [src] "r"(ibk), [dst] "r"(vu0_bk_trans)
+        : "memory"
+    );
 
     vu0_matrix_dirty &= ~0x04; /* BK clean */
 }

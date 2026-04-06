@@ -174,13 +174,16 @@ uint32_t GPU_ReadStatus(void)
      * the CPU idling while the GPU works, but much faster to emulate. */
     extern uint64_t gpu_busy_until;
 
-    if (global_cycles < gpu_busy_until)
+    if (gpu_busy_until)
     {
-        global_cycles = gpu_busy_until;
+        if (global_cycles < gpu_busy_until)
+        {
+            global_cycles = gpu_busy_until;
+            /* Dispatch all scheduler events that occurred during the GPU work */
+            while (global_cycles >= sched_cached_earliest)
+                Sched_Tick(global_cycles);
+        }
         gpu_busy_until = 0;
-        /* Dispatch all scheduler events that occurred during the GPU work */
-        while (global_cycles >= sched_cached_earliest)
-            Sched_Tick(global_cycles);
     }
 
     /* Force bits: 28 (ready DMA), 26 (ready CMD), 13 (interlace field).

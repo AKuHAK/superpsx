@@ -193,7 +193,85 @@ void dynarec_print_stats(void)
     printf("  DBL pending     : %d\n", patch_sites_count);
     fflush(stdout);
 #endif
+#ifdef ENABLE_JIT_DUMP
+    if (blocks_compiled > 500)
+        jit_dump_blocks("jitdump.bin");
+#endif
 }
+
+/* ================================================================
+ *  JIT Block Dump — offline analysis support
+ *
+ *  Binary format:
+ *    Header:  "JITD" (4 bytes) + block_count (uint32_t)
+ *    Per block:
+ *      psx_pc       (uint32_t)
+ *      instr_count  (uint32_t, N)
+ *      native_count (uint32_t, M)
+ *      cycle_count  (uint32_t)
+ *      exec_count   (uint32_t)
+ *      psx_code     (N × uint32_t)
+ *      native_code  (M × uint32_t)
+ * ================================================================ */
+#ifdef ENABLE_JIT_DUMP
+void jit_dump_blocks(const char *filename)
+{
+    FILE *f = fopen(filename, "wb");
+    if (!f)
+    {
+        printf("[JIT DUMP] Failed to open %s for writing\n", filename);
+        return;
+    }
+
+    /* Count valid (non-invalidated) blocks */
+    uint32_t valid_count = 0;
+    for (int i = 0; i < block_node_pool_idx; i++)
+    {
+        if (block_node_pool[i].native != NULL)
+            valid_count++;
+    }
+
+    /* Header */
+    fwrite("JITD", 1, 4, f);
+    fwrite(&valid_count, sizeof(uint32_t), 1, f);
+
+    /* Per-block data */
+    for (int i = 0; i < block_node_pool_idx; i++)
+    {
+        BlockEntry *be = &block_node_pool[i];
+        if (be->native == NULL)
+            continue;
+
+        fwrite(&be->psx_pc, sizeof(uint32_t), 1, f);
+        fwrite(&be->instr_count, sizeof(uint32_t), 1, f);
+        fwrite(&be->native_count, sizeof(uint32_t), 1, f);
+        fwrite(&be->cycle_count, sizeof(uint32_t), 1, f);
+        fwrite(&be->exec_count, sizeof(uint32_t), 1, f);
+
+        /* PSX instructions from RAM/BIOS */
+        uint32_t *psx_code = get_psx_code_ptr(be->psx_pc);
+        if (psx_code)
+        {
+            fwrite(psx_code, sizeof(uint32_t), be->instr_count, f);
+        }
+        else
+        {
+            /* Block's RAM region unavailable (shouldn't happen) — write zeros */
+            for (uint32_t j = 0; j < be->instr_count; j++)
+            {
+                uint32_t zero = 0;
+                fwrite(&zero, sizeof(uint32_t), 1, f);
+            }
+        }
+
+        /* Native EE code */
+        fwrite(be->native, sizeof(uint32_t), be->native_count, f);
+    }
+
+    fclose(f);
+    printf("[JIT DUMP] Wrote %u blocks to %s\n", valid_count, filename);
+}
+#endif
 
 /* ================================================================
  *  Dynarec Core Life Cycle
@@ -460,6 +538,9 @@ static inline void update_dynarec_stats(BlockEntry *be, uint32_t cycles_taken)
     stat_total_cycles += cycles_taken;
     stat_total_native_instrs += be->native_count;
     stat_total_psx_instrs += be->instr_count;
+#endif
+#ifdef ENABLE_JIT_DUMP
+    be->exec_count++;
 #endif
 }
 

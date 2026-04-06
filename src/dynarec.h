@@ -53,6 +53,9 @@ typedef struct BlockEntry
     uint8_t block_pattern;   /* 0=none, 1=zero-fill (P-ZERO) */
     uint8_t pattern_base_reg;  /* P-ZERO: base pointer PSX register */
     uint8_t pattern_limit_reg; /* P-ZERO: limit register for loop end */
+#ifdef ENABLE_JIT_DUMP
+    uint32_t exec_count;       /* Per-block execution counter for offline analysis */
+#endif
 } BlockEntry;
 
 typedef struct
@@ -727,5 +730,9 @@ int BIOS_HLE_C(void);
  * ================================================================ */
 void dynarec_print_stats(void);
 void dynarec_print_jit_profile(void);
+
+#ifdef ENABLE_JIT_DUMP
+void jit_dump_blocks(const char *filename);
+#endif
 
 #endif /* DYNAREC_H */

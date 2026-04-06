@@ -17,6 +17,12 @@ uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
 /* P28: Page-table epoch — bumped on every new L2 page allocation (RAM only) */
 uint16_t smc_page_epoch = 0;
 
+/* P29: Per-page dirty flag for SMC handler debounce.
+ * Set to 1 by jit_smc_handler after processing; cleared by cache_block
+ * when blocks are (re)compiled on the page.  Native inline code checks
+ * this flag: if already dirty, skip the handler call entirely. */
+uint8_t smc_page_dirty[JIT_L1_RAM_PAGES];
+
 /*
  * SMC (Self-Modifying Code) handler for the JIT inline write fast path.
  * Called when a const-address word store writes to a RAM page.
@@ -30,9 +36,13 @@ void jit_smc_handler(uint32_t phys_addr)
     uint32_t page = phys_addr >> 12;
     if (page >= JIT_L1_RAM_PAGES)
         return;
+    /* P29: Debounce — skip if already handled since last recompile */
+    if (smc_page_dirty[page])
+        return;
     jit_l2_t l2 = jit_l1_ram[page];
     if (!l2)
         return;
+    smc_page_dirty[page] = 1;
     /* Bump generation so C-side check also detects staleness */
     jit_page_gen[page]++;
     /* Remove all jit_ht entries for blocks on this page */
@@ -226,6 +236,9 @@ BlockEntry *cache_block(uint32_t psx_pc, uint32_t *native)
         be->page_gen = jit_get_page_gen(phys);
         be->smc_epoch = smc_page_epoch;
     }
+    /* P29: Clear dirty flag so future stores trigger the handler again */
+    if (l1_table == jit_l1_ram)
+        smc_page_dirty[l1_idx] = 0;
     return be;
 }
 

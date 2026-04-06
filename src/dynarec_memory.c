@@ -856,26 +856,33 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             else
                 EMIT_SB(REG_T9, 0, REG_T8);
 
-            /* SMC detection: inline check of jit_l1_ram[page] before calling
-             * the full handler.  Most pages have no compiled blocks, so the
-             * inline NULL check (3-4 instrs) avoids the expensive trampoline
-             * call (~30 instrs with reg save/restore) in the common case.
+            /* SMC detection for const-address word stores to RAM.
              *
              * P28: Skip entirely when jit_l1_ram[page] is NULL at compile
              * time (no compiled blocks on this page right now).  Safety:
              * if code is later compiled on the page, smc_page_epoch bumps
-             * and run_jit_chain invalidates this block for recompilation. */
+             * and run_jit_chain invalidates this block for recompilation.
+             *
+             * P29: Debounce via smc_page_dirty[page].  Instead of always
+             * calling the handler when the page has code, check the dirty
+             * flag first.  The handler sets dirty=1 on first call; native
+             * code skips subsequent calls until blocks are recompiled
+             * (cache_block clears dirty=0).  Reduces 70K C calls to ~1
+             * per recompilation cycle for hot counter-increment patterns. */
             if (size == 4 && jit_l1_ram[phys >> 12] != NULL)
             {
                 uint32_t page = phys >> 12;
+                uint32_t dirty_addr = (uint32_t)&smc_page_dirty[page];
+                uint16_t dirty_hi = (dirty_addr + 0x8000) >> 16;
+                int16_t dirty_lo = (int16_t)(dirty_addr & 0xFFFF);
                 flush_dirty_consts();
-                emit_load_imm32(REG_T8, (uint32_t)&jit_l1_ram[page]);
-                EMIT_LW(REG_T8, 0, REG_T8); /* t8 = jit_l1_ram[page] */
-                uint32_t *beq_ptr = code_ptr;
-                EMIT_BEQ(REG_T8, REG_ZERO, 0); /* skip if NULL (placeholder) */
+                emit(MK_I(0x0F, 0, REG_T8, dirty_hi));           /* lui t8, hi(&dirty[page]) */
+                emit(MK_I(0x24, REG_T8, REG_T8, dirty_lo));      /* lbu t8, lo(&dirty[page])(t8) */
+                uint32_t *bne_ptr = code_ptr;
+                emit(MK_I(0x05, REG_T8, REG_ZERO, 0));           /* bne t8, zero, @done (placeholder) */
                 EMIT_NOP();
 
-                /* Only reached when page has compiled blocks */
+                /* Not yet dirty — call handler (sets dirty=1, bumps gen, removes HT) */
                 emit_load_imm32(REG_A0, phys);
                 EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
                 emit_load_imm32(REG_T8, (uint32_t)jit_smc_handler);
@@ -883,9 +890,9 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
                 EMIT_NOP();
                 /* T0-T7 preserved by lite trampoline save/restore */
 
-                /* Fixup BEQ target to skip the handler call */
-                int32_t skip = (int32_t)(code_ptr - beq_ptr - 2);
-                *beq_ptr = MK_I(4, REG_T8, REG_ZERO, skip & 0xFFFF);
+                /* Fixup BNE target to skip the handler call */
+                int32_t skip = (int32_t)(code_ptr - bne_ptr - 1);
+                *bne_ptr = MK_I(0x05, REG_T8, REG_ZERO, skip & 0xFFFF);
             }
             return;
         }

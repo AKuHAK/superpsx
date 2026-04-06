@@ -186,6 +186,10 @@ extern uint8_t jit_page_gen[JIT_L1_RAM_PAGES];
  * so they pick up the check for the newly-populated code page. */
 extern uint16_t smc_page_epoch;
 
+/* P29: Per-page dirty flag — debounces inline SMC handler calls.
+ * Checked inline in native code; set by handler, cleared on recompile. */
+extern uint8_t smc_page_dirty[JIT_L1_RAM_PAGES];
+
 static inline void jit_invalidate_page(uint32_t phys_addr)
 {
     uint32_t page = phys_addr >> 12;

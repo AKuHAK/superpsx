@@ -1097,6 +1097,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         Free_PageTable();
         memset(jit_l1_ram, 0, sizeof(jit_l1_ram));
         memset(jit_l1_bios, 0, sizeof(jit_l1_bios));
+        memset(smc_page_dirty, 0, sizeof(smc_page_dirty));
         memset(block_node_pool, 0, BLOCK_NODE_POOL_SIZE * sizeof(BlockEntry));
         block_node_pool_idx = 0;
         patch_sites_count = 0;

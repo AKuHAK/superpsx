@@ -287,6 +287,7 @@ extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;
 extern uint32_t block_pinned_dirty_mask; /* Pinned regs written in current block */
 extern int block_isc_cached;             /* 1 if ISC bit is cached in SP+0 for this block */
+extern int block_isc_skip;              /* 1 if ISC is compile-time known 0, skip all checks */
 extern int block_has_isc_write;          /* 1 if block can toggle ISC via MTC0 to SR (not RFE) */
 extern int block_cu2_hoisted;            /* 1 if CU2 check hoisted to block prologue */
 extern int block_lite_calls;             /* # of emit_call_c_lite calls in current block */

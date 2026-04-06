@@ -27,6 +27,10 @@ void debug_mtc0_sr(uint32_t val)
         }
         last_sr_logged = val;
     }
+    /* If ISC bit (16) changes, flush JIT: blocks compiled with/without
+     * ISC checks must be recompiled with the correct assumption. */
+    if ((val ^ cpu.cop0[PSX_COP0_SR]) & (1 << 16))
+        jit_flush_pending = 1;
     cpu.cop0[PSX_COP0_SR] = val;
     cpu.irq_pending_fast = cpu.irq_pending & (val & 1);
 }
@@ -1147,22 +1151,33 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
         flush_dirty_consts();
 
         /* P22: Inline ISC skip for SWC2 when SMRV+aligned (same as SW) */
-        if (block_isc_cached && smrv_is_known_ram(rs) && align_is_known(rs) && (imm % 4 == 0))
+        if ((block_isc_cached || block_isc_skip) && smrv_is_known_ram(rs) && align_is_known(rs) && (imm % 4 == 0))
         {
-            EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
-            uint32_t *isc_skip = code_ptr;
-            emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
-            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* [delay] and at,t8,s3 */
+            uint32_t *isc_skip_ptr = NULL;
+            if (!block_isc_skip)
+            {
+                EMIT_LW(REG_AT, 80, REG_SP); /* at = cached ISC     */
+                isc_skip_ptr = code_ptr;
+                emit(MK_I(0x05, REG_AT, REG_ZERO, 0));          /* bne at,zero,@skip   */
+            }
+            emit(MK_R(0, REG_T8, REG_S3, REG_AT, 0, 0x24)); /* and at,t8,s3 */
             EMIT_ADDU(REG_AT, REG_AT, REG_S1);              /* addu at, at, s1     */
             EMIT_SW(REG_T9, 0, REG_AT);                     /* store               */
-            int32_t skip_off = (int32_t)(code_ptr - isc_skip - 1);
-            *isc_skip = (*isc_skip & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+            if (isc_skip_ptr)
+            {
+                int32_t skip_off = (int32_t)(code_ptr - isc_skip_ptr - 1);
+                *isc_skip_ptr = (*isc_skip_ptr & 0xFFFF0000) | ((uint32_t)skip_off & 0xFFFF);
+            }
         }
         else
         {
             /* Cache Isolation check */
-            uint32_t *isc_swc2;
-            if (block_isc_cached)
+            uint32_t *isc_swc2 = NULL;
+            if (block_isc_skip)
+            {
+                /* ISC compile-time 0 — no check needed */
+            }
+            else if (block_isc_cached)
             {
                 EMIT_LW(REG_AT, 80, REG_SP);
                 isc_swc2 = code_ptr;
@@ -1211,7 +1226,8 @@ int emit_instruction(uint32_t opcode, uint32_t psx_pc, int *mult_count)
             {
                 uint32_t *branches[4];
                 int nb = 0;
-                branches[nb++] = isc_swc2;
+                if (isc_swc2)
+                    branches[nb++] = isc_swc2;
                 if (align_swc2)
                     branches[nb++] = align_swc2;
                 if (range_swc2)

@@ -111,6 +111,7 @@ uint32_t emit_cycle_offset = 0;
 uint32_t emit_current_psx_pc = 0;
 uint32_t block_pinned_dirty_mask = 0;
 int block_isc_cached = 0;    /* 1 if ISC bit cached in SP+80 for current block */
+int block_isc_skip = 0;     /* 1 if ISC is compile-time known 0, skip all ISC checks */
 int block_has_isc_write = 0; /* 1 if block has MTC0 to SR (can toggle ISC bit 16) */
 int block_cu2_hoisted = 0;   /* 1 if CU2 check hoisted to block prologue */
 int block_lite_calls = 0;    /* # of emit_call_c_lite calls in current block */
@@ -1155,15 +1156,26 @@ uint32_t *compile_block(uint32_t psx_pc)
      * saves T0-T7 at offsets 0-24,76. */
     if (!scan.has_mtc0_sr)
     {
-        block_isc_cached = 1;
-        EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);      /* at = SR           */
-        emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02)); /* srl at, at, 16    */
-        emit(MK_I(0x0C, REG_AT, REG_AT, 1));        /* andi at, at, 1    */
-        EMIT_SW(REG_AT, 80, REG_SP);                /* sw at, 80(sp)     */
+        if (!(cpu.cop0[PSX_COP0_SR] & (1 << 16)))
+        {
+            /* ISC not set at compile time and can't change in block → skip all ISC checks */
+            block_isc_cached = 0;
+            block_isc_skip = 1;
+        }
+        else
+        {
+            block_isc_cached = 1;
+            block_isc_skip = 0;
+            EMIT_LW(REG_AT, CPU_COP0(12), REG_S0);      /* at = SR           */
+            emit(MK_R(0, 0, REG_AT, REG_AT, 16, 0x02)); /* srl at, at, 16    */
+            emit(MK_I(0x0C, REG_AT, REG_AT, 1));        /* andi at, at, 1    */
+            EMIT_SW(REG_AT, 80, REG_SP);                /* sw at, 80(sp)     */
+        }
     }
     else
     {
         block_isc_cached = 0;
+        block_isc_skip = 0;
     }
     block_has_isc_write = scan.has_isc_write;
 
@@ -1401,9 +1413,12 @@ uint32_t *compile_block(uint32_t psx_pc)
                      * vregs carry over — const propagation across fall-through. */
                     sub_block_start_pc = cur_pc;
                     block_scan(psx_code, SCAN_MAX_INSNS, &scan);
-                    /* If continuation sub-block writes SR, invalidate ISC cache */
+                    /* If continuation sub-block writes SR, invalidate ISC cache/skip */
                     if (scan.has_mtc0_sr)
+                    {
                         block_isc_cached = 0;
+                        block_isc_skip = 0;
+                    }
                     if (scan.has_isc_write)
                         block_has_isc_write = 1;
                     continuations++;

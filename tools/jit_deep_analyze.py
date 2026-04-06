@@ -578,19 +578,19 @@ def analyze_native_overhead(blocks):
                         used[j] = True
                         count += 1
 
-        # --- Abort check: BLEZ S2,+3; LW AT,irq_fast; BEQ AT,0,+3; NOP; J abort; NOP ---
+        # --- Abort check ---
+        # Full check (6w): BLEZ S2,+3; LW AT,irq_fast; BEQ AT,0,+3; NOP; J abort; NOP
+        # Cycle-only (6w): BLEZ S2,+2; SW T8,cpu.pc; J directlink; NOP; J abort; NOP
         for i in range(pro_end, n - 5):
             if used[i]:
                 continue
             w = nc[i]
-            # BLEZ $s2, +3 = 0x1A40 0003
-            if w == 0x1A400003:
-                count = 0
-                for j in range(i, min(i + 6, n)):
+            if w == 0x1A400003 or w == 0x1A400002:
+                count = 6 if w == 0x1A400003 else 6
+                for j in range(i, min(i + count, n)):
                     if not used[j]:
                         cats["abort_check"] += 1
                         used[j] = True
-                        count += 1
 
         # --- Hash dispatch: LW T8,cpu.pc(S0); ADDIU S2; J trampoline; NOP ---
         for i in range(pro_end, n - 3):

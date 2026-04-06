@@ -158,20 +158,33 @@ static void emit_deferred_taken_all(void)
         dirty_const_mask = e->saved_dirty_mask;
         dyn_dirty_mask = e->saved_dyn_dirty;
 
-        /* Emit standard branch epilogue inline with three-check abort:
-         * cycles exhausted OR (IRQ pending AND IEc).  Matches emit_branch_epilogue(). */
+        /* Emit standard branch epilogue inline.  Matches emit_branch_epilogue(). */
         flush_dirty_consts();
         dyn_flush_dirty_slots(); /* D: deferred taken — dirty-only */
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
-        EMIT_SW(REG_T8, CPU_PC, REG_S0);
-        emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → abort */
-        EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: irq_pending_fast */
-        EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
-        EMIT_NOP();
-        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-        EMIT_NOP();
-        emit_direct_link(e->target_pc);
+
+        if (block_lite_calls == 0 && block_full_calls == 0)
+        {
+            /* Cycle-only abort: SW in BLEZ delay slot */
+            emit(MK_I(0x06, REG_S2, REG_ZERO, 2));
+            EMIT_SW(REG_T8, CPU_PC, REG_S0);
+            emit_direct_link(e->target_pc);
+            EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+            EMIT_NOP();
+        }
+        else
+        {
+            /* Full abort check with IRQ */
+            EMIT_SW(REG_T8, CPU_PC, REG_S0);
+            emit(MK_I(0x06, REG_S2, REG_ZERO, 3));
+            EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);
+            EMIT_BEQ(REG_AT, REG_ZERO, 3);
+            EMIT_NOP();
+            EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+            EMIT_NOP();
+            emit_direct_link(e->target_pc);
+        }
     }
     deferred_taken_count = 0;
 }
@@ -858,31 +871,51 @@ void emit_branch_epilogue(uint32_t target_pc)
     /* Calculate remaining cycles after this block */
     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count);
 
-    /* Update cpu.pc IMMEDIATELY, before any potential abort check */
+    /* Materialize target PC into T8 */
     emit_load_imm32(REG_T8, target_pc);
-    EMIT_SW(REG_T8, CPU_PC, REG_S0);
 
-    /* Two-check abort sequence: cycles exhausted OR irq_pending_fast.
-     * irq_pending_fast = irq_pending & (SR.IEc) is precomputed by C code
-     * at every irq_pending / SR modification site.
-     * Layout (6 words):
-     *   BLEZ  s2, +3          → J abort (cycles <= 0)
-     *   LW    AT, IRQ_FAST(S0) (delay: always loads irq_pending_fast)
-     *   BEQ   AT, ZERO, +3    → direct_link (no actionable IRQ)
-     *   NOP                   (delay)
-     *   J     abort_trampoline
-     *   NOP                   (J delay)
-     *   [direct_link]
-     */
-    emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → J abort */
-    EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: load irq_pending_fast */
-    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
-    EMIT_NOP();
-    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-    EMIT_NOP(); /* Delay slot */
-
-    /* Direct link to target block (bypassing prologue, maintaining stack and pinned regs) */
-    emit_direct_link(target_pc);
+    if (block_lite_calls == 0 && block_full_calls == 0)
+    {
+        /* Cycle-only abort: no inline C calls means irq_pending_fast
+         * cannot change during this block.  SW cpu.pc is folded into
+         * the BLEZ delay slot (always executes, both paths need it).
+         * Layout (6 words):
+         *   BLEZ  s2, +2          → NOP (@dbl delay = BLEZ target)
+         *   SW    t8, cpu.pc(s0)  (delay: always stores cpu.pc)
+         *   J     target_block    (direct_link)
+         *   NOP                   (delay of J / BLEZ target)
+         *   J     abort_trampoline
+         *   NOP                   (delay)
+         */
+        emit(MK_I(0x06, REG_S2, REG_ZERO, 2));          /* BLEZ s2, +2 → NOP/abort */
+        EMIT_SW(REG_T8, CPU_PC, REG_S0);                 /* delay: cpu.pc = target */
+        emit_direct_link(target_pc);                      /* J target + NOP */
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP();
+    }
+    else
+    {
+        /* Full abort check with IRQ: block has inline C calls that could
+         * change irq_pending_fast at runtime.
+         * Layout (9 words):
+         *   SW    t8, cpu.pc(s0)
+         *   BLEZ  s2, +3          → J abort (cycles <= 0)
+         *   LW    AT, IRQ_FAST(S0) (delay: always loads irq_pending_fast)
+         *   BEQ   AT, ZERO, +3    → direct_link (no actionable IRQ)
+         *   NOP                   (delay)
+         *   J     abort_trampoline
+         *   NOP                   (J delay)
+         *   [direct_link]
+         */
+        EMIT_SW(REG_T8, CPU_PC, REG_S0);
+        emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → J abort */
+        EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: load irq_pending_fast */
+        EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
+        EMIT_NOP();
+        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+        EMIT_NOP(); /* Delay slot */
+        emit_direct_link(target_pc);
+    }
 }
 
 /* ================================================================
@@ -1427,13 +1460,26 @@ uint32_t *compile_block(uint32_t psx_pc)
                     EMIT_ADDIU(REG_S2, REG_S2, -(int16_t)block_cycle_count); /* delay: both paths */
 
                     /* Predicted path: abort check + direct link */
-                    emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → abort */
-                    EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: irq_pending_fast */
-                    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* no IRQ fast → direct_link */
-                    EMIT_NOP();
-                    EMIT_J_ABS((uint32_t)abort_trampoline_addr);
-                    EMIT_NOP();
-                    emit_direct_link(jr_predicted_pc);
+                    if (block_lite_calls == 0 && block_full_calls == 0)
+                    {
+                        /* Cycle-only: no C calls, irq_pending_fast can't change */
+                        emit(MK_I(0x06, REG_S2, REG_ZERO, 2));          /* BLEZ s2, +2 → abort */
+                        EMIT_NOP();
+                        emit_direct_link(jr_predicted_pc);               /* J target + NOP (BLEZ target) */
+                        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+                        EMIT_NOP();
+                    }
+                    else
+                    {
+                        /* Full check with IRQ */
+                        emit(MK_I(0x06, REG_S2, REG_ZERO, 3));          /* BLEZ s2, +3 → abort */
+                        EMIT_LW(REG_AT, CPU_IRQ_PENDING_FAST, REG_S0);  /* delay: irq_pending_fast */
+                        EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* no IRQ fast → direct_link */
+                        EMIT_NOP();
+                        EMIT_J_ABS((uint32_t)abort_trampoline_addr);
+                        EMIT_NOP();
+                        emit_direct_link(jr_predicted_pc);
+                    }
 
                     /* @hash_fallback: mispredicted — use hash dispatch */
                     int32_t hash_off = (int32_t)(code_ptr - hash_patch - 1);

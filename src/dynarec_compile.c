@@ -9,21 +9,21 @@
 #include "scheduler.h"
 
 /* ---- JIT instruction category profiling ---- */
-enum {
-    JCAT_ALU = 0,    /* ALU, shifts, LUI, set-compare */
-    JCAT_MULDIV,     /* MULT/MULTU/DIV/DIVU/MFHI/MFLO/MTHI/MTLO */
-    JCAT_LOADSTORE,  /* LB/LH/LW/SB/SH/SW/LWL/LWR/SWL/SWR */
-    JCAT_BRANCH,     /* BEQ/BNE/BLTZ/BGEZ/BLEZ/BGTZ/J/JAL/JR/JALR */
-    JCAT_COP0,       /* MFC0/MTC0/RFE */
-    JCAT_COP2_DATA,  /* MFC2/MTC2/CFC2/CTC2/LWC2/SWC2 */
-    JCAT_COP2_CMD,   /* GTE compute ops */
-    JCAT_OTHER,      /* COP1/COP3/BREAK/SYSCALL */
+enum
+{
+    JCAT_ALU = 0,   /* ALU, shifts, LUI, set-compare */
+    JCAT_MULDIV,    /* MULT/MULTU/DIV/DIVU/MFHI/MFLO/MTHI/MTLO */
+    JCAT_LOADSTORE, /* LB/LH/LW/SB/SH/SW/LWL/LWR/SWL/SWR */
+    JCAT_BRANCH,    /* BEQ/BNE/BLTZ/BGEZ/BLEZ/BGTZ/J/JAL/JR/JALR */
+    JCAT_COP0,      /* MFC0/MTC0/RFE */
+    JCAT_COP2_DATA, /* MFC2/MTC2/CFC2/CTC2/LWC2/SWC2 */
+    JCAT_COP2_CMD,  /* GTE compute ops */
+    JCAT_OTHER,     /* COP1/COP3/BREAK/SYSCALL */
     JCAT_NUM
 };
 static const char *jcat_names[JCAT_NUM] = {
-    "ALU", "MulDiv", "Load/Store", "Branch", "COP0", "COP2data", "GTE_cmd", "Other"
-};
-uint64_t jcat_psx_count[JCAT_NUM];   /* PSX instructions per category */
+    "ALU", "MulDiv", "Load/Store", "Branch", "COP0", "COP2data", "GTE_cmd", "Other"};
+uint64_t jcat_psx_count[JCAT_NUM];    /* PSX instructions per category */
 uint64_t jcat_native_words[JCAT_NUM]; /* EE native words emitted per category */
 uint32_t jcat_cache_flushes;          /* code buffer full resets */
 uint32_t jcat_peak_buffer_used;       /* high water mark (bytes) */
@@ -31,37 +31,53 @@ uint32_t jcat_peak_buffer_used;       /* high water mark (bytes) */
 static inline int classify_opcode(uint32_t op)
 {
     uint32_t major = OP(op);
-    if (major == 0) {
+    if (major == 0)
+    {
         uint32_t fn = FUNC(op);
         if (fn == 0x18 || fn == 0x19 || fn == 0x1A || fn == 0x1B ||
             fn == 0x10 || fn == 0x11 || fn == 0x12 || fn == 0x13)
             return JCAT_MULDIV;
-        if (fn == 0x08 || fn == 0x09) return JCAT_BRANCH; /* JR/JALR */
-        if (fn == 0x0C || fn == 0x0D) return JCAT_OTHER;  /* SYSCALL/BREAK */
+        if (fn == 0x08 || fn == 0x09)
+            return JCAT_BRANCH; /* JR/JALR */
+        if (fn == 0x0C || fn == 0x0D)
+            return JCAT_OTHER; /* SYSCALL/BREAK */
         return JCAT_ALU;
     }
-    if (major == 1) return JCAT_BRANCH;   /* BLTZ/BGEZ family */
-    if (major == 2 || major == 3) return JCAT_BRANCH; /* J/JAL */
-    if (major >= 4 && major <= 7) return JCAT_BRANCH; /* BEQ/BNE/BLEZ/BGTZ */
-    if (major >= 8 && major <= 0x0F) return JCAT_ALU; /* ADDI-XORI, LUI */
-    if (major == 0x10) return JCAT_COP0;
-    if (major == 0x11) return JCAT_OTHER; /* COP1 */
-    if (major == 0x12) return (op & 0x02000000) ? JCAT_COP2_CMD : JCAT_COP2_DATA;
-    if (major == 0x13) return JCAT_OTHER; /* COP3 */
-    if (major >= 0x20 && major <= 0x2E) return JCAT_LOADSTORE;
-    if (major == 0x32) return JCAT_COP2_DATA; /* LWC2 */
-    if (major == 0x3A) return JCAT_COP2_DATA; /* SWC2 */
+    if (major == 1)
+        return JCAT_BRANCH; /* BLTZ/BGEZ family */
+    if (major == 2 || major == 3)
+        return JCAT_BRANCH; /* J/JAL */
+    if (major >= 4 && major <= 7)
+        return JCAT_BRANCH; /* BEQ/BNE/BLEZ/BGTZ */
+    if (major >= 8 && major <= 0x0F)
+        return JCAT_ALU; /* ADDI-XORI, LUI */
+    if (major == 0x10)
+        return JCAT_COP0;
+    if (major == 0x11)
+        return JCAT_OTHER; /* COP1 */
+    if (major == 0x12)
+        return (op & 0x02000000) ? JCAT_COP2_CMD : JCAT_COP2_DATA;
+    if (major == 0x13)
+        return JCAT_OTHER; /* COP3 */
+    if (major >= 0x20 && major <= 0x2E)
+        return JCAT_LOADSTORE;
+    if (major == 0x32)
+        return JCAT_COP2_DATA; /* LWC2 */
+    if (major == 0x3A)
+        return JCAT_COP2_DATA; /* SWC2 */
     return JCAT_OTHER;
 }
 
 void dynarec_print_jit_profile(void)
 {
     uint64_t total_psx = 0, total_native = 0;
-    for (int i = 0; i < JCAT_NUM; i++) {
+    for (int i = 0; i < JCAT_NUM; i++)
+    {
         total_psx += jcat_psx_count[i];
         total_native += jcat_native_words[i];
     }
-    if (total_psx == 0) return;
+    if (total_psx == 0)
+        return;
     uint32_t buf_used = (uint32_t)((uint8_t *)code_ptr - (uint8_t *)code_buffer);
     printf("[JIT PROFILE] buf=%luKB/%luKB (%.0f%%) peak=%luKB flushes=%lu blocks=%lu\n",
            (unsigned long)(buf_used / 1024), (unsigned long)(CODE_BUFFER_SIZE / 1024),
@@ -69,8 +85,10 @@ void dynarec_print_jit_profile(void)
            (unsigned long)(jcat_peak_buffer_used / 1024),
            (unsigned long)jcat_cache_flushes, (unsigned long)blocks_compiled);
     printf("[JIT INSNS]  ");
-    for (int i = 0; i < JCAT_NUM; i++) {
-        if (jcat_psx_count[i] == 0) continue;
+    for (int i = 0; i < JCAT_NUM; i++)
+    {
+        if (jcat_psx_count[i] == 0)
+            continue;
         uint64_t pc = jcat_psx_count[i];
         uint64_t nw = jcat_native_words[i];
         printf("%s:%llu(%.1fx,%.0f%%) ", jcat_names[i],
@@ -147,12 +165,12 @@ static void emit_deferred_taken_all(void)
         emit(MK_I(0x09, REG_S2, REG_S2, (int16_t)(-(int)e->cycle_count)));
         emit_load_imm32(REG_T8, e->target_pc);
         EMIT_SW(REG_T8, CPU_PC, REG_S0);
-        emit(MK_I(0x06, REG_S2, REG_ZERO, 6)); /* BLEZ s2, +6 → abort */
-        EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0); /* delay: load irq_pending */
-        EMIT_BEQ(REG_AT, REG_ZERO, 6);         /* BEQ at, zero, +6 → direct_link */
+        emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → abort */
+        EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: load irq_pending */
+        EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* BEQ at, zero, +6 → direct_link */
         EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: load SR */
-        emit(MK_I(0x0C, REG_AT, REG_AT, 1));   /* ANDI at, at, 1 — IEc bit */
-        EMIT_BEQ(REG_AT, REG_ZERO, 3);         /* BEQ at, zero, +3 → direct_link */
+        emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, at, 1 — IEc bit */
+        EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
         EMIT_NOP();
         EMIT_J_ABS((uint32_t)abort_trampoline_addr);
         EMIT_NOP();
@@ -862,12 +880,12 @@ void emit_branch_epilogue(uint32_t target_pc)
      *   NOP                   (J delay)
      *   [direct_link]
      */
-    emit(MK_I(0x06, REG_S2, REG_ZERO, 6)); /* BLEZ s2, +6 → J abort */
-    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0); /* delay: load irq_pending */
-    EMIT_BEQ(REG_AT, REG_ZERO, 6);         /* BEQ at, zero, +6 → direct_link */
+    emit(MK_I(0x06, REG_S2, REG_ZERO, 6));          /* BLEZ s2, +6 → J abort */
+    EMIT_LW(REG_AT, CPU_IRQ_PENDING, REG_S0);       /* delay: load irq_pending */
+    EMIT_BEQ(REG_AT, REG_ZERO, 6);                  /* BEQ at, zero, +6 → direct_link */
     EMIT_LW(REG_AT, CPU_COP0(PSX_COP0_SR), REG_S0); /* delay: load SR */
-    emit(MK_I(0x0C, REG_AT, REG_AT, 1));   /* ANDI at, at, 1 — IEc bit */
-    EMIT_BEQ(REG_AT, REG_ZERO, 3);         /* BEQ at, zero, +3 → direct_link */
+    emit(MK_I(0x0C, REG_AT, REG_AT, 1));            /* ANDI at, at, 1 — IEc bit */
+    EMIT_BEQ(REG_AT, REG_ZERO, 3);                  /* BEQ at, zero, +3 → direct_link */
     EMIT_NOP();
     EMIT_J_ABS((uint32_t)abort_trampoline_addr);
     EMIT_NOP(); /* Delay slot */
@@ -1057,13 +1075,15 @@ uint32_t *compile_block(uint32_t psx_pc)
     int block_mult_count = 0;
     int gte_stall_remaining = 0; /* GTE pipeline stall tracker */
 
-#define ACCOUNT_INSN(op) do {                                       \
-    uint32_t _wa = (uint32_t)(code_ptr - block_start);              \
-    int _cat = classify_opcode(op);                                 \
-    jcat_psx_count[_cat]++;                                         \
-    jcat_native_words[_cat] += (_wa - words_before_insn);           \
-    words_before_insn = _wa;                                        \
-} while(0)
+#define ACCOUNT_INSN(op)                                      \
+    do                                                        \
+    {                                                         \
+        uint32_t _wa = (uint32_t)(code_ptr - block_start);    \
+        int _cat = classify_opcode(op);                       \
+        jcat_psx_count[_cat]++;                               \
+        jcat_native_words[_cat] += (_wa - words_before_insn); \
+        words_before_insn = _wa;                              \
+    } while (0)
 
     while (!block_ended)
     {
@@ -1598,8 +1618,7 @@ uint32_t *compile_block(uint32_t psx_pc)
         cur_pc += 4;
         total_instructions++;
 
-        if ((cur_pc - sub_block_start_pc) >= 256 || (cur_pc - psx_pc) >= (MAX_SUPER_INSNS * 4)
-        )
+        if ((cur_pc - sub_block_start_pc) >= 256 || (cur_pc - psx_pc) >= (MAX_SUPER_INSNS * 4))
         {
             if (pending_load_reg != 0)
             {
@@ -1667,6 +1686,75 @@ uint32_t *compile_block(uint32_t psx_pc)
             }
         }
 
+        /* P-IDLE: Detect compile-time timeout loop.
+         * Pattern: ADDIU rx, rx, -1; BNE rx, $zero, loop_start; NOP
+         * When detected, is_idle = 3 so the runtime handler can zero the
+         * counter and skip mathematically instead of executing the loop. */
+        uint8_t timeout_reg_idx = 0;
+        if (is_idle == 2) /* conditional self-loop, no side effects */
+        {
+            uint32_t block_instr_count_t = (cur_pc - psx_pc) / 4;
+            if (block_instr_count_t == 3)
+            {
+                uint32_t *tcode = get_psx_code_ptr(psx_pc);
+                if (tcode)
+                {
+                    uint32_t i0 = tcode[0], i1 = tcode[1], i2 = tcode[2];
+                    /* ADDIU rt, rs, imm with rs==rt, imm == -1 */
+                    if (OP(i0) == 0x09 && RS(i0) == RT(i0) && RT(i0) != 0 &&
+                        SIMM16(i0) == -1 &&
+                        /* BNE rs, $zero with rs == ADDIU's register */
+                        OP(i1) == 0x05 && RS(i1) == RT(i0) && RT(i1) == 0 &&
+                        /* NOP delay slot */
+                        i2 == 0)
+                    {
+                        is_idle = 3;
+                        timeout_reg_idx = RT(i0);
+                    }
+                }
+            }
+        }
+
+        /* P-ZERO: Detect zero-fill loop.
+         * Pattern: SW $zero, 0(base); ADDIU base, base, 4; BNE base, limit, loop; NOP
+         * Detected independently of idle (stores prevent idle marking).
+         * At runtime, the C handler uses memset for remaining iterations. */
+        uint8_t zfill_pattern = 0, zfill_base = 0, zfill_limit = 0;
+        if (branch_type == 4 && branch_target == psx_pc && is_idle == 0)
+        {
+            uint32_t bic = (cur_pc - psx_pc) / 4;
+            if (bic == 4)
+            {
+                uint32_t *zcode = get_psx_code_ptr(psx_pc);
+                if (zcode)
+                {
+                    uint32_t z0 = zcode[0], z1 = zcode[1], z2 = zcode[2], z3 = zcode[3];
+                    /* SW $zero, 0(base) */
+                    if (OP(z0) == 0x2B && RT(z0) == 0 && SIMM16(z0) == 0 &&
+                        /* ADDIU base, base, 4 */
+                        OP(z1) == 0x09 && RS(z1) == RS(z0) && RT(z1) == RS(z0) &&
+                        SIMM16(z1) == 4 &&
+                        /* BNE with one operand == base */
+                        OP(z2) == 0x05 && z3 == 0)
+                    {
+                        uint8_t base = RS(z0);
+                        uint8_t bne_rs = RS(z2), bne_rt = RT(z2);
+                        uint8_t limit = 0;
+                        if (bne_rs == base && bne_rt != 0)
+                            limit = bne_rt;
+                        else if (bne_rt == base && bne_rs != 0)
+                            limit = bne_rs;
+                        if (limit)
+                        {
+                            zfill_pattern = 1;
+                            zfill_base = base;
+                            zfill_limit = limit;
+                        }
+                    }
+                }
+            }
+        }
+
         BlockEntry *be = cache_block(psx_pc, block_start);
         if (be)
         {
@@ -1675,6 +1763,10 @@ uint32_t *compile_block(uint32_t psx_pc)
             be->native_count = (uint32_t)(code_ptr - block_start);
             be->cycle_count = block_cycle_count > 0 ? block_cycle_count : block_instr_count;
             be->is_idle = is_idle;
+            be->timeout_reg = timeout_reg_idx;
+            be->block_pattern = zfill_pattern;
+            be->pattern_base_reg = zfill_base;
+            be->pattern_limit_reg = zfill_limit;
             /* Hash all PSX opcodes for self-modifying code detection */
             uint32_t *opcodes = get_psx_code_ptr(psx_pc);
             uint32_t hash = 0;

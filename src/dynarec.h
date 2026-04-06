@@ -45,10 +45,14 @@ typedef struct BlockEntry
     uint32_t instr_count;    /* Number of PSX instructions in this block */
     uint32_t native_count;   /* Number of native R5900 instructions generated */
     uint32_t cycle_count;    /* Weighted R3000A cycle count for this block */
-    uint32_t is_idle;        /* 1 = idle loop (self-jump, no side effects) */
+    uint32_t is_idle;        /* 1 = unconditional idle, 2 = conditional idle, 3 = timeout loop (P-IDLE) */
     struct BlockEntry *next; /* Collision chain pointer */
     uint32_t code_hash;      /* XOR hash of PSX block opcodes (legacy, unused) */
     uint8_t page_gen;        /* Page generation at compile time (SMC fast check) */
+    uint8_t timeout_reg;     /* P-IDLE: PSX register index being decremented (valid when is_idle == 3) */
+    uint8_t block_pattern;   /* 0=none, 1=zero-fill (P-ZERO) */
+    uint8_t pattern_base_reg;  /* P-ZERO: base pointer PSX register */
+    uint8_t pattern_limit_reg; /* P-ZERO: limit register for loop end */
 } BlockEntry;
 
 typedef struct

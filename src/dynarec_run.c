@@ -946,6 +946,56 @@ int run_jit_chain(uint64_t deadline)
         {
             idle_skip_count = 0;
         }
+        else if (be->is_idle == 3) /* P-IDLE: timeout loop — mathematical skip */
+        {
+            /* Timeout pattern: ADDIU rx,rx,-1; BNE rx,$0,loop; NOP
+             * The counter reg was partially decremented during the first
+             * chain call. Skip the remaining iterations mathematically. */
+            uint32_t counter = cpu.regs[be->timeout_reg];
+            if (counter > 0 && counter < 0x10000000u) /* sanity: avoid wrap-around */
+            {
+                uint64_t cycles_needed = (uint64_t)counter * be->cycle_count;
+                uint64_t complete_time = global_cycles + cycles_needed;
+                uint64_t skip_target = deadline;
+                if (sched_cached_earliest < skip_target)
+                    skip_target = sched_cached_earliest;
+                if (complete_time <= skip_target)
+                {
+                    /* Full completion: loop finishes */
+                    cpu.regs[be->timeout_reg] = 0;
+                    cpu.pc = pc + be->instr_count * 4;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+                    hotspot_idle_skips++;
+                    hotspot_idle_cycles_skipped += cycles_needed;
+#endif
+                    global_cycles = complete_time;
+                }
+                else
+                {
+                    /* Partial: skip as many iterations as possible */
+                    uint64_t avail = skip_target - global_cycles;
+                    uint32_t iters = (uint32_t)(avail / be->cycle_count);
+                    if (iters > 0)
+                    {
+                        cpu.regs[be->timeout_reg] = counter - iters;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+                        hotspot_idle_skips++;
+                        hotspot_idle_cycles_skipped += (uint64_t)iters * be->cycle_count;
+#endif
+                        global_cycles += (uint64_t)iters * be->cycle_count;
+                    }
+                    /* cpu.pc stays at loop start — will re-enter after scheduler tick */
+                }
+            }
+            else
+            {
+                /* Counter is 0 or suspiciously large → complete the loop */
+                cpu.regs[be->timeout_reg] = 0;
+                cpu.pc = pc + be->instr_count * 4;
+            }
+            idle_skip_count = 0;
+            return RUN_RES_BREAK;
+        }
         else
         {
             if (pc != idle_skip_pc)
@@ -988,6 +1038,43 @@ int run_jit_chain(uint64_t deadline)
     else
     {
         idle_skip_count = 0;
+    }
+
+    /* P-ZERO: Zero-fill pattern optimization.
+     * If the block is a SW $zero loop that self-looped, complete the
+     * remaining zeroing with memset and advance time mathematically.
+     * Must run BEFORE poll detection to prevent the zero-fill loop
+     * from being mistakenly patched as a polling loop. */
+    if (__builtin_expect(be && be->block_pattern == 1 && cpu.pc == pc && !DMA_IsPending(), 0))
+    {
+        uint32_t base = cpu.regs[be->pattern_base_reg];
+        uint32_t limit = cpu.regs[be->pattern_limit_reg];
+        uint32_t phys_base = base & 0x1FFFFFFF;
+        uint32_t phys_limit = limit & 0x1FFFFFFF;
+        /* Validate: both in RAM, base < limit, reasonable size */
+        if (phys_base < PSX_RAM_SIZE && phys_limit <= PSX_RAM_SIZE &&
+            phys_base < phys_limit && (phys_limit - phys_base) <= PSX_RAM_SIZE)
+        {
+            uint32_t size = phys_limit - phys_base;
+            memset(psx_ram + phys_base, 0, size);
+            /* SMC notification: bump page generation for affected pages */
+            uint32_t page_start = phys_base >> 12;
+            uint32_t page_end = (phys_limit - 1) >> 12;
+            for (uint32_t pg = page_start; pg <= page_end; pg++)
+                jit_smc_handler(pg << 12);
+            /* Update registers: base = limit (loop completed) */
+            cpu.regs[be->pattern_base_reg] = limit;
+            cpu.pc = pc + be->instr_count * 4;
+            /* Account for cycles */
+            uint32_t words = size / 4;
+            global_cycles += (uint64_t)words * be->cycle_count;
+#ifdef ENABLE_SUBSYSTEM_PROFILER
+            hotspot_idle_skips++;
+            hotspot_idle_cycles_skipped += (uint64_t)words * be->cycle_count;
+#endif
+            return RUN_RES_BREAK;
+        }
+        /* Validation failed: fall through to normal poll detection */
     }
 
     /* Dynamic polling detection: if a chain exits to the same PC

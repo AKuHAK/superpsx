@@ -10,12 +10,16 @@
 #include "gpu_state.h"
 #include "gpu_psp_state.h"
 #include "gpu_backend.h"
+#include "gpu_trace.h"
 #include "osd.h"
 #include "profiler.h"
 #include "config.h"
 #include <pspgu.h>
 #include <pspdisplay.h>
 #include <pspge.h>
+#ifdef ENABLE_GPU_TRACE
+#include <pspctrl.h>
+#endif
 #include <psputils.h>
 #include <malloc.h>
 #include <string.h>
@@ -432,6 +436,21 @@ void GPU_Backend_VBlank(void)
     gpu_pending_vblank_flush = 1;
     gpu_stat ^= 0x80000000; /* Toggle GPUSTAT bit 31 (LCF) */
     osd_vblank_count++;
+
+#ifdef ENABLE_GPU_TRACE
+    /* Check for L+R trigger combo to dump trace */
+    {
+        SceCtrlData pad;
+        sceCtrlPeekBufferPositive(&pad, 1);
+        static int trace_prev = 0;
+        int trace_cur = (pad.Buttons & (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER))
+                     == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER);
+        if (trace_cur && !trace_prev)
+            gpu_trace_trigger_dump("ms0:/gpu_trace.bin");
+        trace_prev = trace_cur;
+    }
+    gpu_trace_frame_end();
+#endif
 
     /* PSP cannot scan EDRAM directly like the PS2 GS — we must actively
      * blit the PSX VRAM region to the screen framebuffer every VBlank. */

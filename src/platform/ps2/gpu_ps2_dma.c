@@ -6,6 +6,7 @@
  * PSX games to submit display lists).
  */
 #include "gpu_ps2_state.h"
+#include "gpu_trace.h"
 #include "scheduler.h"
 #include "profiler.h"
 
@@ -157,6 +158,10 @@ int GPU_DMA2(uint32_t madr, uint32_t bcr, uint32_t chcr)
                 DLOG("ERROR: Packet count too large (%" PRIu32 "). Aborting chain.\n", count);
                 break;
             }
+
+            /* Record raw GP0 words for offline trace analysis */
+            if (count > 0)
+                gpu_trace_record((uint32_t *)&psx_ram[(addr + 4) & 0x1FFFFC], count);
 
             addr = (addr + 4) & 0x1FFFFC;
 

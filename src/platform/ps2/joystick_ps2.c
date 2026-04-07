@@ -7,6 +7,7 @@
 
 #include "joystick.h"
 #include "gpu_state.h"
+#include "gpu_trace.h"
 
 #define PS2_MAX_PORT 2 /* each ps2 has 2 ports */
 #define PS2_MAX_SLOT 4 /* maximum - 4 slots in one multitap */
@@ -206,7 +207,9 @@ void Joystick_GetPSXDigitalResponse(int port, int slot, uint8_t response[3])
         response[2] &= ~0x08;
     if (ps2 & PAD_TRIANGLE)
     {
-        exit(0); /* Triangle button exit is handled directly in Joystick_Poll() (joystick_ps2.c) */
+        gpu_trace_trigger_dump("host:gpu_trace.bin");
+        gpu_trace_frame_end(); /* flush pending dump immediately */
+        // exit(0); /* Triangle button exit is handled directly in Joystick_Poll() (joystick_ps2.c) */
         response[2] &= ~0x10;
     }
     if (ps2 & PAD_CIRCLE)

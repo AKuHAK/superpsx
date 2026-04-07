@@ -10,6 +10,7 @@
  */
 #include "gpu_state.h"
 #include "gpu_backend.h"
+#include "gpu_trace.h"
 #include "osd.h"
 #include "config.h"
 #include <time.h>
@@ -1031,6 +1032,9 @@ void GPU_WriteGP1(uint32_t data)
 void GPU_ProcessDmaBlock(uint32_t *data_ptr, uint32_t word_count)
 {
     uint32_t i = 0;
+
+    /* Record raw GP0 DMA words for offline analysis */
+    gpu_trace_record(data_ptr, word_count);
 
     /* ── Drain any in-progress state from prior calls ── */
     while (i < word_count && (gpu_transfer_words > 0 || gpu_cmd_remaining > 0 || polyline_active))

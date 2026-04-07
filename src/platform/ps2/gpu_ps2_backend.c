@@ -6,6 +6,7 @@
  */
 #include "gpu_backend.h"
 #include "gpu_ps2_state.h"
+#include "gpu_trace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
@@ -33,7 +34,7 @@ void GPU_Backend_Flush(void)           { Flush_GIF(); }
 void GPU_Backend_FlushSync(void)       { Flush_GIF_Sync(); }
 void GPU_Backend_SetupEnvironment(void){ Setup_GS_Environment(); }
 void GPU_Backend_UpdateDisplay(void)   { Update_GS_Display(); }
-void GPU_Backend_VBlank(void)          { GPU_VBlank(); }
+void GPU_Backend_VBlank(void)          { GPU_VBlank(); gpu_trace_frame_end(); }
 
 /* ── VRAM write streaming (STP bit + qword packing for GS IMAGE) ── */
 

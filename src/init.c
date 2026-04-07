@@ -9,6 +9,7 @@
 #include "superpsx.h"
 #include "config.h"
 #include "gpu_backend.h"
+#include "gpu_trace.h"
 #include "iso_image.h"
 #include "iso_fs.h"
 #include "osd.h"
@@ -48,6 +49,7 @@ void Init_SuperPSX(void)
     fflush(stdout);
 
     GPU_Backend_Init();
+    gpu_trace_init();
     osd_boot_log("SuperPSX v0.2 - Native Dynarec");
 
     Init_Memory();

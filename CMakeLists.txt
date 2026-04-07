@@ -41,6 +41,7 @@ option(ENABLE_DYNAREC_STATS "Enable dynarec execution statistics" ON)
 option(ENABLE_SUBSYSTEM_PROFILER "Enable per-subsystem wall-clock profiler" ON)
 option(ENABLE_JIT_DUMP "Dump compiled JIT blocks for offline analysis" OFF)
 option(ENABLE_TEX_DEBUG "Enable texture debug overlay (colored bounding boxes)" OFF)
+option(ENABLE_GPU_TRACE "Record GP0 command ring buffer for offline analysis" OFF)
 option(HEADLESS "Build without GPU/video output (no-op GPU stubs)" OFF)
 
 # PS2-only options
@@ -138,6 +139,7 @@ set(SUPERPSX_SOURCES
     src/iso_fs.c
     src/profiler.c
     src/interpreter.c
+    src/gpu_trace.c
 )
 
 # Platform-specific MDEC backends
@@ -263,6 +265,10 @@ endif()
 
 if(ENABLE_MDEC_VFPU)
     target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_MDEC_VFPU)
+endif()
+
+if(ENABLE_GPU_TRACE)
+    target_compile_definitions(${MAIN_TARGET} PRIVATE ENABLE_GPU_TRACE)
 endif()
 
 if(HEADLESS)

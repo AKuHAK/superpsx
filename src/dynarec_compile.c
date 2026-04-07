@@ -70,6 +70,9 @@ static inline int classify_opcode(uint32_t op)
 
 void dynarec_print_jit_profile(void)
 {
+#ifndef ENABLE_DYNAREC_STATS
+    return;
+#else
     uint64_t total_psx = 0, total_native = 0;
     for (int i = 0; i < JCAT_NUM; i++)
     {
@@ -100,6 +103,7 @@ void dynarec_print_jit_profile(void)
            (unsigned long long)total_psx, (unsigned long long)total_native,
            (double)total_native / total_psx);
     fflush(stdout);
+#endif
 }
 
 /* ---- Compile-time state ---- */

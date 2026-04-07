@@ -134,9 +134,11 @@ static uint32_t cycles_per_hblank_runtime = CYCLES_PER_HBLANK_NTSC; /* Set at in
 uint64_t hblank_frame_start_cycle = 0;                              /* Cycle at which current frame started (VBlank reset) */
 
 /* Frame limiter: wall-clock target for next VBlank */
+#ifndef PLATFORM_PSP
 static uint32_t frame_limit_next_ms = 0;
 static const uint32_t FRAME_TIME_NTSC_US = 16667; /* 1000000 / 60 */
 static const uint32_t FRAME_TIME_PAL_US = 20000;  /* 1000000 / 50 */
+#endif
 
 static uint64_t perf_last_report_cycle = 0;
 static uint32_t perf_last_report_tick = 0;
@@ -795,12 +797,14 @@ static void Sched_HBlank_Callback(int ticks_late)
         SPU_GenerateSamples(); /* Generate remaining audio + submit to audio hw */
         SPU_FrameStart();      /* Reset SPU frame cycle for catch-up */  
 
-        /* Frame limiter: busy-wait until the wall-clock frame budget is met.
-         * On PSP, GPU_Backend_UpdateDisplay() already syncs via sceGuSync +
-         * sceGuSwapBuffers (vsync-latched), so the busy-wait is unnecessary
-         * and would double the frame delay. */
+        /* Frame pacing: audio-driven sync via blocking Audio_Backend_Play()
+         * in SPU_FlushAudio() above.  The audio hardware clock (44100 Hz)
+         * naturally paces the emulator to real-time — no busy-wait needed.
+         *
+         * Legacy busy-wait frame limiter kept as fallback for when audio
+         * is disabled or init fails (frame_limit config option). */
 #ifndef PLATFORM_PSP
-        if (psx_config.frame_limit)
+        if (psx_config.frame_limit && !SPU_IsInitialized())
         {
             uint32_t frame_us = psx_config.region_pal ? FRAME_TIME_PAL_US : FRAME_TIME_NTSC_US;
             uint32_t now_us = (uint32_t)clock();

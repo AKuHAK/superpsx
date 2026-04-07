@@ -361,6 +361,11 @@ void SPU_Init(void)
     printf("[SPU] Initialized: %d Hz, 16-bit, stereo\n", SPU_SAMPLE_RATE);
 }
 
+int SPU_IsInitialized(void)
+{
+    return spu_initialized;
+}
+
 void SPU_Shutdown(void)
 {
     if (spu_initialized)

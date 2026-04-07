@@ -63,9 +63,11 @@ void Audio_Backend_Play(const int16_t *buffer, int size_bytes) {
         samples_processed += to_copy;
 
         if (audio_buf_samples >= PSP_AUDIO_BLOCK_SAMPLES) {
-            /* Non-blocking: submit and continue. If channel busy, block dropped
-             * — acceptable for emu speed vs stalling CPU 11ms per block. */
-            sceAudioOutput(audio_channel, audio_volume, audio_internal_buf);
+            /* Blocking output: waits for previous block to finish playing.
+             * This naturally paces the emulator to real-time via the audio
+             * hardware clock (44100 Hz crystal), replacing timer-based frame
+             * limiting with jitter-free audio-driven sync. */
+            sceAudioOutputBlocking(audio_channel, audio_volume, audio_internal_buf);
             audio_buf_samples = 0;
         }
     }

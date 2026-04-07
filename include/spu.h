@@ -17,6 +17,7 @@ void SPU_GenerateChunk(int num_samples);
 void SPU_FlushAudio(void);
 void SPU_CatchUp(void);
 void SPU_FrameStart(void);
+int SPU_IsInitialized(void);
 
 #ifdef __cplusplus
 }

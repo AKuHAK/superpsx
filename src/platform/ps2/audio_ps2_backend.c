@@ -30,6 +30,11 @@ int Audio_Backend_Configure(int sample_rate, int bits, int channels, int volume)
 
 void Audio_Backend_Play(const int16_t *buffer, int size_bytes)
 {
+    /* Blocking wait: sleep until the IOP ring buffer has enough space.
+     * This naturally paces the emulator to real-time via the audio
+     * hardware clock, replacing the busy-wait frame limiter with
+     * jitter-free audio-driven sync. */
+    audsrv_wait_audio(size_bytes);
     audsrv_play_audio((char *)buffer, size_bytes);
 }
 

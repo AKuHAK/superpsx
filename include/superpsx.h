@@ -22,52 +22,58 @@
 #endif
 
 /*=== CPU State ===*/
+/* Layout: hot dispatch fields in first cache line (64 bytes), then GPRs,
+ * then COP0/GTE arrays.  All JIT code references fields via CPU_* macros
+ * so the reorder is transparent to code generation. */
 typedef struct
 {
-    uint32_t regs[32];            /* 0x00: GPR */
-    uint32_t pc;                  /* 0x80: Program Counter */
-    uint32_t hi;                  /* 0x84 */
-    uint32_t lo;                  /* 0x88 */
-    uint32_t cop0[32];            /* 0x8C: COP0 registers */
-    uint32_t cp2_data[32];        /* 0x10C: GTE Data Registers (V0, V1, V2, etc.) */
-    uint32_t cp2_ctrl[32];        /* 0x18C: GTE Control Registers (Matrices, etc.) */
-    uint32_t current_pc;          /* PC of the currently executing instruction (for exceptions) */
-    uint32_t load_delay_reg;      /* Load delay slot: target register index (0=none) */
-    uint32_t load_delay_val;      /* Load delay slot: pending value */
-    uint32_t load_commit_reg;     /* Load delay slot: value to test against current insn */
-    uint32_t load_commit_val;
-    uint32_t i_stat;              /* Interrupt Status Register */
-    uint32_t i_mask;              /* Interrupt Mask Register */
-    uint32_t block_aborted;       /* Set by PSX_Exception mid-block; checked by JIT */
-    uint32_t branch_cond;         /* Scratch: branch condition saved across delay slot */
-    uint32_t initial_cycles_left; /* Used to compute elapsed cycles during JIT execution */
-    uint32_t cycles_left;         /* Maintained by JIT, sync'd to cpu on C calls */
-    int32_t  cycles_left_correction; /* Accumulated S2 trim from mid-chain SIO capping */
-    uint32_t irq_pending;         /* Non-zero when (i_stat & i_mask & 0x7FF) != 0; checked by JIT at block boundaries */
-    uint32_t irq_pending_fast;    /* irq_pending & (cop0[SR] & 1) — precomputed for JIT abort check */
+    /* ── Cache line 0: hot JIT dispatch fields (0x00-0x3F) ── */
+    uint32_t cycles_left;            /* 0x00: Maintained by JIT, sync'd to cpu on C calls */
+    uint32_t block_aborted;          /* 0x04: Set by PSX_Exception mid-block; checked by JIT */
+    uint32_t irq_pending;            /* 0x08: Non-zero when (i_stat & i_mask & 0x7FF) != 0 */
+    uint32_t irq_pending_fast;       /* 0x0C: irq_pending & (cop0[SR] & 1) — precomputed */
+    uint32_t i_stat;                 /* 0x10: Interrupt Status Register */
+    uint32_t i_mask;                 /* 0x14: Interrupt Mask Register */
+    uint32_t pc;                     /* 0x18: Program Counter */
+    uint32_t current_pc;             /* 0x1C: PC of currently executing instruction */
+    uint32_t hi;                     /* 0x20 */
+    uint32_t lo;                     /* 0x24 */
+    uint32_t branch_cond;            /* 0x28: Scratch: branch condition saved across delay slot */
+    uint32_t initial_cycles_left;    /* 0x2C: Used to compute elapsed cycles */
+    int32_t  cycles_left_correction; /* 0x30: Accumulated S2 trim from mid-chain SIO capping */
+    uint32_t load_delay_reg;         /* 0x34: Load delay slot: target register index (0=none) */
+    uint32_t load_delay_val;         /* 0x38: Load delay slot: pending value */
+    uint32_t load_commit_reg;        /* 0x3C: Load delay slot: value to test against current insn */
+    /* ── Cache line 1+ ── */
+    uint32_t load_commit_val;        /* 0x40 */
+    uint32_t _pad_cl0;               /* 0x44: padding to align regs[] to 0x48 */
+    uint32_t regs[32];               /* 0x48: GPR (0x48-0xC7) */
+    uint32_t cop0[32];               /* 0xC8: COP0 registers */
+    uint32_t cp2_data[32];           /* 0x148: GTE Data Registers */
+    uint32_t cp2_ctrl[32];           /* 0x1C8: GTE Control Registers */
 } R3000CPU;
 
-/* Struct offsets for asm code generation */
-#define CPU_REG(n) ((n) * 4)
-#define CPU_PC (32 * 4)
-#define CPU_HI (32 * 4 + 4)
-#define CPU_LO (32 * 4 + 8)
-#define CPU_COP0(n) (32 * 4 + 12 + (n) * 4)
-#define CPU_CP2_DATA(n) (32 * 4 + 12 + 32 * 4 + (n) * 4)
-#define CPU_CP2_CTRL(n) (32 * 4 + 12 + 32 * 4 + 32 * 4 + (n) * 4)
-#define CPU_CURRENT_PC (32 * 4 + 12 + 32 * 4 + 32 * 4 + 32 * 4)
-#define CPU_LOAD_DELAY_REG (CPU_CURRENT_PC + 4)
-#define CPU_LOAD_DELAY_VAL (CPU_CURRENT_PC + 8)
-#define CPU_LOAD_COMMIT_REG (CPU_CURRENT_PC + 12)
-#define CPU_LOAD_COMMIT_VAL (CPU_CURRENT_PC + 16)
-#define CPU_I_STAT (CPU_LOAD_COMMIT_VAL + 4)
-#define CPU_I_MASK (CPU_I_STAT + 4)
-#define CPU_BLOCK_ABORTED (CPU_I_MASK + 4)
-#define CPU_BRANCH_COND (CPU_BLOCK_ABORTED + 4)
-#define CPU_INITIAL_CYCLES_LEFT (CPU_BRANCH_COND + 4)
-#define CPU_CYCLES_LEFT (CPU_INITIAL_CYCLES_LEFT + 4)
-#define CPU_IRQ_PENDING (CPU_CYCLES_LEFT + 8) /* skip cycles_left_correction */
-#define CPU_IRQ_PENDING_FAST (CPU_IRQ_PENDING + 4) /* precomputed irq_pending & (SR & 1) */
+/* Struct offsets for asm code generation — hot fields first */
+#define CPU_CYCLES_LEFT         0x00
+#define CPU_BLOCK_ABORTED       0x04
+#define CPU_IRQ_PENDING         0x08
+#define CPU_IRQ_PENDING_FAST    0x0C
+#define CPU_I_STAT              0x10
+#define CPU_I_MASK              0x14
+#define CPU_PC                  0x18
+#define CPU_CURRENT_PC          0x1C
+#define CPU_HI                  0x20
+#define CPU_LO                  0x24
+#define CPU_BRANCH_COND         0x28
+#define CPU_INITIAL_CYCLES_LEFT 0x2C
+#define CPU_LOAD_DELAY_REG      0x34
+#define CPU_LOAD_DELAY_VAL      0x38
+#define CPU_LOAD_COMMIT_REG     0x3C
+#define CPU_LOAD_COMMIT_VAL     0x40
+#define CPU_REG(n)              (0x48 + (n) * 4)
+#define CPU_COP0(n)             (0xC8 + (n) * 4)
+#define CPU_CP2_DATA(n)         (0x148 + (n) * 4)
+#define CPU_CP2_CTRL(n)         (0x1C8 + (n) * 4)
 
 /* COP0 register indices */
 #define PSX_COP0_SR 12

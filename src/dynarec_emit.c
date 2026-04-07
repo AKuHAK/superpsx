@@ -83,24 +83,38 @@ static inline int dyn_slot_find(int r)
     return -1;
 }
 
-/* Assign dynamic slots based on block scan register access frequency.
- * Picks the top-N (up to DYN_SLOT_COUNT) non-pinned PSX GPRs with
- * the highest access count (minimum 2 accesses to justify a slot). */
+/* Assign dynamic slots based on density-weighted register scoring.
+ * Density = access_count * 256 / span, where span = last_use - first_use + 1.
+ * This prioritizes registers with clustered access patterns over those with
+ * the same count but spread across the whole block (M4 optimization). */
 void dyn_assign_slots(BlockScanResult *scan)
 {
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
         dyn_slot_psx[i] = -1;
     dyn_slots_active = 0;
 
+    /* Precompute density scores for all registers */
+    uint32_t scores[32];
+    for (int r = 0; r < 32; r++)
+    {
+        if (scan->reg_access_count[r] < 2 || psx_pinned_reg[r])
+        {
+            scores[r] = 0;
+            continue;
+        }
+        int span = scan->reg_last_use[r] - scan->reg_first_use[r] + 1;
+        if (span <= 0) span = 1;
+        scores[r] = (uint32_t)scan->reg_access_count[r] * 256 / (uint32_t)span;
+    }
+
     int slot = 0;
     while (slot < DYN_SLOT_COUNT)
     {
-        int best = -1, best_count = 1; /* require >= 2 accesses */
+        int best = -1;
+        uint32_t best_score = 0;
         for (int r = 1; r < 32; r++)
         {
-            if (psx_pinned_reg[r])
-                continue;
-            if (scan->reg_access_count[r] <= best_count)
+            if (scores[r] <= best_score)
                 continue;
             /* Check not already assigned */
             int already = 0;
@@ -113,7 +127,7 @@ void dyn_assign_slots(BlockScanResult *scan)
             if (already)
                 continue;
             best = r;
-            best_count = scan->reg_access_count[r];
+            best_score = scores[r];
         }
         if (best < 0)
             break;

@@ -115,6 +115,7 @@ void SPU_GenerateSamples(void) {}
 void SPU_FrameStart(void) {}
 void SPU_Init(void) {}
 void SPU_Shutdown(void) {}
+int SPU_IsInitialized(void) { return 0; }
 void SPU_WriteRegister(uint32_t a, uint16_t v)
 {
     (void)a;
@@ -259,11 +260,10 @@ void pg_reset_jit_cache(void)
     /* Clear hash table */
     for (int i = 0; i < JIT_HT_SIZE; i++)
     {
-        jit_ht[i].psx_pc[0] = 0xFFFFFFFF;
-        jit_ht[i].psx_pc[1] = 0xFFFFFFFF;
-        jit_ht[i].native[0] = NULL;
-        jit_ht[i].native[1] = NULL;
+        jit_ht[i].psx_pc = 0xFFFFFFFF;
+        jit_ht[i].native = NULL;
     }
+    micro_cache_flush();
 
     jit_flush_pending = 1; /* Deferred: will flush before next block execution */
 }

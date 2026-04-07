@@ -56,6 +56,7 @@ void jit_smc_handler(uint32_t phys_addr)
             jit_ht_remove(pc);
         }
     }
+    micro_cache_flush();
 }
 
 BlockEntry *block_node_pool;

@@ -87,6 +87,8 @@ typedef struct
     int has_cop2;                 /* 1 if block contains COP2/LWC2/SWC2 instructions */
     uint32_t first_cop2_pc;       /* PC of first COP2/LWC2/SWC2 instruction (for hoisted CU2 exception) */
     uint8_t reg_access_count[32]; /* per-reg instruction access frequency (capped 255) */
+    uint8_t reg_first_use[32];    /* per-reg first instruction index (for density scoring) */
+    uint8_t reg_last_use[32];     /* per-reg last instruction index (for density scoring) */
 } BlockScanResult;
 
 typedef int32_t (*block_func_t)(R3000CPU *cpu, uint8_t *ram, uint8_t *bios, int32_t cycles_left);
@@ -225,67 +227,41 @@ extern uint64_t stat_dbl_patches;
  *  Hash table for fast indirect jump dispatch (JR/JALR)
  *
  *  Instead of exiting to C on every JR $ra, the JIT does an inline
- *  hash lookup in ~14 R5900 instructions.  Inspired by pcsx-rearmed.
+ *  hash lookup in ~11 R5900 instructions.  Direct-mapped 8192 entries
+ *  with simple shift hash — 64KB total, same as old 2-way 4096.
  * ================================================================ */
-#define JIT_HT_SIZE 4096 /* Must be power of 2 */
+#define JIT_HT_SIZE 8192 /* Must be power of 2 */
 #define JIT_HT_MASK (JIT_HT_SIZE - 1)
 
 typedef struct
 {
-    uint32_t psx_pc[2];  /* PSX virtual address — 2-way set associative */
-    uint32_t *native[2]; /* Pointer to compiled native code (past prologue) */
-} JitHTEntry;            /* 16 bytes: psx_pc[0], psx_pc[1], native[0], native[1] */
+    uint32_t psx_pc;     /* PSX virtual address */
+    uint32_t *native;    /* Pointer to compiled native code (past prologue) */
+} JitHTEntry;            /* 8 bytes: direct-mapped, one entry per bucket */
 
 extern JitHTEntry jit_ht[JIT_HT_SIZE];
 extern uint32_t *jump_dispatch_trampoline_addr;
 
 static inline uint32_t jit_ht_hash(uint32_t pc)
 {
-    return ((pc >> 12) ^ pc) & JIT_HT_MASK;
+    return (pc >> 2) & JIT_HT_MASK;
 }
 
 static inline void jit_ht_add(uint32_t psx_pc, uint32_t *native)
 {
     uint32_t h = jit_ht_hash(psx_pc);
-    uint32_t *entry_native = native + DYNAREC_PROLOGUE_WORDS;
-    /* If already in slot 0, just update native pointer */
-    if (jit_ht[h].psx_pc[0] == psx_pc)
-    {
-        jit_ht[h].native[0] = entry_native;
-        return;
-    }
-    /* If already in slot 1, promote to slot 0 (MRU) */
-    if (jit_ht[h].psx_pc[1] == psx_pc)
-    {
-        jit_ht[h].psx_pc[1] = jit_ht[h].psx_pc[0];
-        jit_ht[h].native[1] = jit_ht[h].native[0];
-        jit_ht[h].psx_pc[0] = psx_pc;
-        jit_ht[h].native[0] = entry_native;
-        return;
-    }
-    /* New entry: shift slot 0 → slot 1, insert at slot 0 */
-    jit_ht[h].psx_pc[1] = jit_ht[h].psx_pc[0];
-    jit_ht[h].native[1] = jit_ht[h].native[0];
-    jit_ht[h].psx_pc[0] = psx_pc;
-    jit_ht[h].native[0] = entry_native;
+    jit_ht[h].psx_pc = psx_pc;
+    jit_ht[h].native = native + DYNAREC_PROLOGUE_WORDS;
 }
 
-/* Remove a specific PC from the hash table (both slots) */
+/* Remove a specific PC from the hash table */
 static inline void jit_ht_remove(uint32_t psx_pc)
 {
     uint32_t h = jit_ht_hash(psx_pc);
-    if (jit_ht[h].psx_pc[0] == psx_pc)
+    if (jit_ht[h].psx_pc == psx_pc)
     {
-        /* Promote slot 1 → slot 0 */
-        jit_ht[h].psx_pc[0] = jit_ht[h].psx_pc[1];
-        jit_ht[h].native[0] = jit_ht[h].native[1];
-        jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
-        jit_ht[h].native[1] = NULL;
-    }
-    else if (jit_ht[h].psx_pc[1] == psx_pc)
-    {
-        jit_ht[h].psx_pc[1] = 0xFFFFFFFF;
-        jit_ht[h].native[1] = NULL;
+        jit_ht[h].psx_pc = 0xFFFFFFFF;
+        jit_ht[h].native = NULL;
     }
 }
 
@@ -294,6 +270,7 @@ static inline void jit_ht_remove(uint32_t psx_pc)
  * ================================================================ */
 extern uint32_t blocks_compiled;
 extern int jit_flush_pending; /* 1 = D/I-cache needs flush before execution */
+void micro_cache_flush(void); /* M7: Invalidate 4-entry hot block micro-cache */
 extern uint32_t total_instructions;
 extern uint32_t block_cycle_count;
 extern uint32_t emit_cycle_offset;

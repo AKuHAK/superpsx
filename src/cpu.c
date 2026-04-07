@@ -9,7 +9,7 @@
 
 #define LOG_TAG "EXC"
 
-R3000CPU cpu;
+R3000CPU cpu __attribute__((aligned(64)));
 
 /* Exception support for dynarec mid-block exceptions */
 jmp_buf psx_block_jmp;

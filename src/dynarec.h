@@ -682,6 +682,7 @@ void Free_PageTable(void);
  * ================================================================ */
 void emit_memory_read(int size, int rt_psx, int rs_psx, int16_t offset, int is_signed);
 void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset);
+void smc_batch_reset(void); /* Reset per-block SMC page-check batch tracker */
 void emit_memory_lwx(int is_left, int rt_psx, int rs_psx, int16_t offset, int use_load_delay);
 void emit_memory_swx(int is_left, int rt_psx, int rs_psx, int16_t offset);
 void cold_slow_reset(void);

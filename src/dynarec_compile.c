@@ -1136,6 +1136,7 @@ uint32_t *compile_block(uint32_t psx_pc)
     block_lite_calls = 0;
     block_full_calls = 0;
     mem_host_base_psx = -1; /* reset host-base cache for new block */
+    smc_batch_reset();      /* reset SMC page-check batching */
 
     if (blocks_compiled < 20)
     {

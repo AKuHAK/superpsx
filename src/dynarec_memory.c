@@ -16,6 +16,14 @@
 #undef LOG_TAG
 #define LOG_TAG "DYNAREC"
 
+/* SMC batch tracking: pages already checked in the current block.
+ * Consecutive const-address stores to the same page share one dirty check. */
+#define SMC_BATCH_MAX 4
+static uint32_t smc_batch_pages[SMC_BATCH_MAX];
+static int smc_batch_count = 0;
+
+void smc_batch_reset(void) { smc_batch_count = 0; }
+
 /* GPU busy-until timestamp — when non-zero, GPU_ReadStatus needs to
  * fast-forward global_cycles.  JIT inline checks this for zero to
  * skip the expensive C call on the common "GPU idle" path. */
@@ -879,27 +887,37 @@ void emit_memory_write(int size, int rt_psx, int rs_psx, int16_t offset)
             if (size == 4 && jit_l1_ram[phys >> 12] != NULL)
             {
                 uint32_t page = phys >> 12;
-                uint32_t dirty_addr = (uint32_t)&smc_page_dirty[page];
-                uint16_t dirty_hi = (dirty_addr + 0x8000) >> 16;
-                int16_t dirty_lo = (int16_t)(dirty_addr & 0xFFFF);
-                flush_dirty_consts();
-                emit(MK_I(0x0F, 0, REG_T8, dirty_hi));           /* lui t8, hi(&dirty[page]) */
-                emit(MK_I(0x24, REG_T8, REG_T8, dirty_lo));      /* lbu t8, lo(&dirty[page])(t8) */
-                uint32_t *bne_ptr = code_ptr;
-                emit(MK_I(0x05, REG_T8, REG_ZERO, 0));           /* bne t8, zero, @done (placeholder) */
-                EMIT_NOP();
+                /* SMC batching: skip if this page was already checked in this block */
+                int already = 0;
+                for (int i = 0; i < smc_batch_count; i++)
+                    if (smc_batch_pages[i] == page) { already = 1; break; }
+                if (!already)
+                {
+                    uint32_t dirty_addr = (uint32_t)&smc_page_dirty[page];
+                    uint16_t dirty_hi = (dirty_addr + 0x8000) >> 16;
+                    int16_t dirty_lo = (int16_t)(dirty_addr & 0xFFFF);
+                    flush_dirty_consts();
+                    emit(MK_I(0x0F, 0, REG_T8, dirty_hi));           /* lui t8, hi(&dirty[page]) */
+                    emit(MK_I(0x24, REG_T8, REG_T8, dirty_lo));      /* lbu t8, lo(&dirty[page])(t8) */
+                    uint32_t *bne_ptr = code_ptr;
+                    emit(MK_I(0x05, REG_T8, REG_ZERO, 0));           /* bne t8, zero, @done (placeholder) */
+                    EMIT_NOP();
 
-                /* Not yet dirty — call handler (sets dirty=1, bumps gen, removes HT) */
-                emit_load_imm32(REG_A0, phys);
-                EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
-                emit_load_imm32(REG_T8, (uint32_t)jit_smc_handler);
-                EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
-                EMIT_NOP();
-                /* T0-T7 preserved by lite trampoline save/restore */
+                    /* Not yet dirty — call handler (sets dirty=1, bumps gen, removes HT) */
+                    emit_load_imm32(REG_A0, phys);
+                    EMIT_SW(REG_S2, CPU_CYCLES_LEFT, REG_S0);
+                    emit_load_imm32(REG_T8, (uint32_t)jit_smc_handler);
+                    EMIT_JAL_ABS((uint32_t)call_c_trampoline_lite_addr);
+                    EMIT_NOP();
+                    /* T0-T7 preserved by lite trampoline save/restore */
 
-                /* Fixup BNE target to skip the handler call */
-                int32_t skip = (int32_t)(code_ptr - bne_ptr - 1);
-                *bne_ptr = MK_I(0x05, REG_T8, REG_ZERO, skip & 0xFFFF);
+                    /* Fixup BNE target to skip the handler call */
+                    int32_t skip = (int32_t)(code_ptr - bne_ptr - 1);
+                    *bne_ptr = MK_I(0x05, REG_T8, REG_ZERO, skip & 0xFFFF);
+
+                    if (smc_batch_count < SMC_BATCH_MAX)
+                        smc_batch_pages[smc_batch_count++] = page;
+                }
             }
             return;
         }

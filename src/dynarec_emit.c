@@ -78,26 +78,29 @@ uint8_t dyn_dirty_mask = 0;
 uint8_t dyn_slot_loaded_mask = 0; /* bit i=1 → slot i has been loaded/written (valid value) */
 uint8_t dyn_slot_entry_loaded = 0; /* loaded mask snapshot at block entry (for abort stub) */
 
+/* Reverse lookup: PSX register → slot index (-1 = not assigned).
+ * Populated by dyn_assign_slots(), avoids O(8) linear scan per lookup. */
+static int psx_to_slot[32];
+
 /* Find the slot index holding PSX reg r, or -1 */
 static inline int dyn_slot_find(int r)
 {
-    for (int i = 0; i < DYN_SLOT_COUNT; i++)
-        if (dyn_slot_psx[i] == r)
-            return i;
-    return -1;
+    return psx_to_slot[r];
 }
 
-/* Assign dynamic slots based on density-weighted register scoring.
- * Density = access_count * 256 / span, where span = last_use - first_use + 1.
- * This prioritizes registers with clustered access patterns over those with
- * the same count but spread across the whole block (M4 optimization). */
+/* Assign dynamic slots based on access-count scoring.
+ * Registers with the most accesses get slots first, as each
+ * slotted access avoids a LW/SW spill (1-2 EE words saved).
+ * Minimum 2 accesses required to justify slot overhead. */
 void dyn_assign_slots(BlockScanResult *scan)
 {
     for (int i = 0; i < DYN_SLOT_COUNT; i++)
         dyn_slot_psx[i] = -1;
+    for (int i = 0; i < 32; i++)
+        psx_to_slot[i] = -1;
     dyn_slots_active = 0;
 
-    /* Precompute density scores for all registers */
+    /* Score = raw access count (each spill avoided saves 1-2 words) */
     uint32_t scores[32];
     for (int r = 0; r < 32; r++)
     {
@@ -106,9 +109,7 @@ void dyn_assign_slots(BlockScanResult *scan)
             scores[r] = 0;
             continue;
         }
-        int span = scan->reg_last_use[r] - scan->reg_first_use[r] + 1;
-        if (span <= 0) span = 1;
-        scores[r] = (uint32_t)scan->reg_access_count[r] * 256 / (uint32_t)span;
+        scores[r] = (uint32_t)scan->reg_access_count[r];
     }
 
     int slot = 0;
@@ -121,21 +122,16 @@ void dyn_assign_slots(BlockScanResult *scan)
             if (scores[r] <= best_score)
                 continue;
             /* Check not already assigned */
-            int already = 0;
-            for (int s = 0; s < slot; s++)
-                if (dyn_slot_psx[s] == r)
-                {
-                    already = 1;
-                    break;
-                }
-            if (already)
+            if (psx_to_slot[r] >= 0)
                 continue;
             best = r;
             best_score = scores[r];
         }
         if (best < 0)
             break;
-        dyn_slot_psx[slot++] = best;
+        dyn_slot_psx[slot] = best;
+        psx_to_slot[best] = slot;
+        slot++;
     }
     if (slot > 0)
         dyn_slots_active = 1;

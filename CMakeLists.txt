@@ -489,41 +489,53 @@ else()
     )
 endif()
 
-add_executable(int_playground.elf EXCLUDE_FROM_ALL ${INT_PLAYGROUND_SOURCES})
+set(INT_PLAYGROUND_AVAILABLE ON)
+foreach(_src ${INT_PLAYGROUND_SOURCES})
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_src}")
+        set(INT_PLAYGROUND_AVAILABLE OFF)
+        break()
+    endif()
+endforeach()
 
-target_include_directories(int_playground.elf PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
-    ${PLATFORM_INCLUDE_DIR}
-    ${CMAKE_SOURCE_DIR}/tests/int
-)
+if(INT_PLAYGROUND_AVAILABLE)
+    add_executable(int_playground.elf EXCLUDE_FROM_ALL ${INT_PLAYGROUND_SOURCES})
 
-if(TARGET_PSP)
-    target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
-    target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND PLATFORM_PSP)
-    target_link_libraries(int_playground.elf PRIVATE
-        -lpsppower
-        -lm
-        -lc
-        -lpspdebug
-        -lpspkernel
+    target_include_directories(int_playground.elf PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+        ${PLATFORM_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/tests/int
     )
-    # Fix up import stubs (must run after linking)
-    add_custom_command(
-        TARGET int_playground.elf
-        POST_BUILD COMMAND
-        "$ENV{PSPDEV}/bin/psp-fixup-imports" "$<TARGET_FILE:int_playground.elf>"
-        COMMENT "Calling psp-fixup-imports for int_playground.elf"
-    )
+
+    if(TARGET_PSP)
+        target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall -ffast-math)
+        target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND PLATFORM_PSP)
+        target_link_libraries(int_playground.elf PRIVATE
+            -lpsppower
+            -lm
+            -lc
+            -lpspdebug
+            -lpspkernel
+        )
+        # Fix up import stubs (must run after linking)
+        add_custom_command(
+            TARGET int_playground.elf
+            POST_BUILD COMMAND
+            "$ENV{PSPDEV}/bin/psp-fixup-imports" "$<TARGET_FILE:int_playground.elf>"
+            COMMENT "Calling psp-fixup-imports for int_playground.elf"
+        )
+    else()
+        target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall)
+        target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND ENABLE_VU0_MICRO PLATFORM_PS2)
+        add_dependencies(int_playground.elf vu0_programs)
+        target_link_libraries(int_playground.elf PRIVATE
+            ${VU0_OBJECTS}
+            -lpatches
+            -lps2_drivers
+        )
+    endif()
 else()
-    target_compile_options(int_playground.elf PRIVATE -O2 -G0 -Wall)
-    target_compile_definitions(int_playground.elf PRIVATE INT_PLAYGROUND ENABLE_VU0_MICRO PLATFORM_PS2)
-    add_dependencies(int_playground.elf vu0_programs)
-    target_link_libraries(int_playground.elf PRIVATE
-        ${VU0_OBJECTS}
-        -lpatches
-        -lps2_drivers
-    )
+    message(STATUS "INT Playground disabled: tests/int sources not present")
 endif()
 
 if(TARGET_PSP)
@@ -609,21 +621,23 @@ else()
         VERBATIM
     )
 
-    set(INT_PG_CMD "${PCSX2_PATH}")
-    foreach(_f ${PCSX2_RUN_FLAGS})
-        list(APPEND INT_PG_CMD "${_f}")
-    endforeach()
-    list(APPEND INT_PG_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/int_playground.elf")
-    string(REPLACE ";" "\\;" INT_PG_CMD_ESC "${INT_PG_CMD}")
+    if(INT_PLAYGROUND_AVAILABLE)
+        set(INT_PG_CMD "${PCSX2_PATH}")
+        foreach(_f ${PCSX2_RUN_FLAGS})
+            list(APPEND INT_PG_CMD "${_f}")
+        endforeach()
+        list(APPEND INT_PG_CMD -elf "${CMAKE_CURRENT_BINARY_DIR}/int_playground.elf")
+        string(REPLACE ";" "\\;" INT_PG_CMD_ESC "${INT_PG_CMD}")
 
-    add_custom_target(run-int-playground
-        COMMAND ${CMAKE_COMMAND}
-            "-DPCSX2_CMD=${INT_PG_CMD_ESC}"
-            -P "${EMU_RUN_SCRIPT}"
-        DEPENDS int_playground.elf
-        COMMENT "Running INT Playground in PCSX2"
-        VERBATIM
-    )
+        add_custom_target(run-int-playground
+            COMMAND ${CMAKE_COMMAND}
+                "-DPCSX2_CMD=${INT_PG_CMD_ESC}"
+                -P "${EMU_RUN_SCRIPT}"
+            DEPENDS int_playground.elf
+            COMMENT "Running INT Playground in PCSX2"
+            VERBATIM
+        )
+    endif()
 endif()
 
 # ============================================================================

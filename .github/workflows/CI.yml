@@ -67,7 +67,20 @@ jobs:
     - name: Install dependencies
       run: |
         apk update
-        apk add cmake gmp mpc1 mpfr4 make
+        apk add cmake git gmp mpc1 mpfr4 make
+
+    - name: Use upstream ps2sdk
+      run: |
+        set -euo pipefail
+
+        PS2DEV_PATH="${PS2DEV:-/usr/local/ps2dev}"
+        PS2SDK_PATH="${PS2SDK:-$PS2DEV_PATH/ps2sdk}"
+
+        rm -rf "$PS2SDK_PATH"
+        git clone --depth 1 https://github.com/ps2dev/ps2sdk.git "$PS2SDK_PATH"
+
+        make -C "$PS2SDK_PATH" -j "$(getconf _NPROCESSORS_ONLN)"
+        make -C "$PS2SDK_PATH" install
 
     - name: Configure with CMake
       run: |

@@ -77,7 +77,6 @@ jobs:
         rm -rf "$PS2SDK_PATH"
         git clone --depth 1 https://github.com/ps2dev/ps2sdk.git "$PS2SDK_PATH"
 
-        make -C "$PS2SDK_PATH" clean
         make -C "$PS2SDK_PATH" -j "$(getconf _NPROCESSORS_ONLN)"
 
     - name: Configure with CMake

@@ -38,7 +38,6 @@
 #define PENDING_DELAY_SEEKL 1000000U    /* ~30ms  — seek completion */
 #define PENDING_DELAY_READTOC 16000000U /* ~480ms — full TOC read */
 #define PENDING_DELAY_DEFAULT 200000U   /* ~6ms   — generic fallback */
-#define PLAY_SEEK_POLL_CYCLES 200U      /* Wait loop while Play INT2 is pending/blocked */
 
 /* ---- BCD helpers ---- */
 static uint8_t dec_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
@@ -361,9 +360,6 @@ static void cdrom_execute_command(uint8_t cmd)
          * pending response payload reports the target post-seek play state. */
         resp[0] = 0x82; /* Playing + Motor On after seek/spinup */
         cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_SEEKL); /* INT2 */
-        Sched_Add(SCHED_EVENT_CDROM,
-                                global_cycles + PENDING_DELAY_SEEKL,
-                                CDROM_EventCallback);
         break;
     }
 
@@ -753,6 +749,9 @@ static void cdrom_deliver_pending(void)
     {
         cdrom.play_seek_pending = 0;
         cdrom_set_stat(0x82); /* Transition to Play state when INT2 is delivered */
+        Sched_Add(SCHED_EVENT_CDROM,
+                                global_cycles + cdrom_read_delay(),
+                                CDROM_EventCallback);
     }
     memcpy(cdrom.response_fifo, cdrom.pending_response, cdrom.pending_count);
     cdrom.response_count = cdrom.pending_count;
@@ -859,18 +858,13 @@ static void CDROM_EventCallback(int ticks_late)
     if (cdrom.playing)
     {
         if (cdrom.play_seek_pending)
-        {
-            Sched_Add(SCHED_EVENT_CDROM,
-                                    global_cycles + PLAY_SEEK_POLL_CYCLES,
-                                    CDROM_EventCallback);
             return;
-        }
 
         /* Track position should progress during CDDA playback so Getloc* works. */
         if (cdrom.cur_lba < DISC_MAX_LBA)
             cdrom.cur_lba++;
         else
-            cdrom.playing = 0; /* TODO(psx-spx): trigger end-of-disc IRQ (INT4/INT5 + status code). */
+            cdrom.playing = 0; /* TODO(psx-spx): trigger end-of-disc INT4(DataEnd?) + status (verify on HW). */
 
         if (cdrom.playing)
         {

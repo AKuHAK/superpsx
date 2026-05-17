@@ -357,6 +357,8 @@ static void cdrom_execute_command(uint8_t cmd)
         cdrom_set_stat(0x42); /* Seeking + Motor On */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
+        /* Keep cdrom.stat at 0x42 until INT2 is actually delivered; only the
+         * pending response payload reports the target post-seek play state. */
         resp[0] = 0x82; /* Playing + Motor On after seek/spinup */
         cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_SEEKL); /* INT2 */
         Sched_Add(SCHED_EVENT_CDROM,
@@ -868,7 +870,7 @@ static void CDROM_EventCallback(int ticks_late)
         if (cdrom.cur_lba < DISC_MAX_LBA)
             cdrom.cur_lba++;
         else
-            cdrom.playing = 0; /* TODO: trigger end-of-disc IRQ (likely INT4/INT5 + status code) */
+            cdrom.playing = 0; /* TODO(psx-spx): trigger end-of-disc IRQ (INT4/INT5 + status code). */
 
         if (cdrom.playing)
         {

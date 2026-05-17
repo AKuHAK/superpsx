@@ -38,6 +38,7 @@
 #define PENDING_DELAY_SEEKL 1000000U    /* ~30ms  — seek completion */
 #define PENDING_DELAY_READTOC 16000000U /* ~480ms — full TOC read */
 #define PENDING_DELAY_DEFAULT 200000U   /* ~6ms   — generic fallback */
+#define PLAY_SEEK_POLL_CYCLES 200U      /* Wait loop while Play INT2 is pending/blocked */
 
 /* ---- BCD helpers ---- */
 static uint8_t dec_to_bcd(int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
@@ -745,8 +746,8 @@ static void cdrom_deliver_pending(void)
     }
 
     DLOG("Delivering pending INT%d (count=%d)\n", cdrom.pending_int, cdrom.pending_count);
-    if (cdrom.play_seek_pending && cdrom.pending_int == 2 &&
-        cdrom.pending_count > 0 && cdrom.pending_response[0] == 0x82)
+    if (cdrom.playing && cdrom.play_seek_pending &&
+        cdrom.pending_int == 2 && cdrom.last_cmd == 0x03)
     {
         cdrom.play_seek_pending = 0;
         cdrom_set_stat(0x82); /* Transition to Play state when INT2 is delivered */
@@ -858,7 +859,7 @@ static void CDROM_EventCallback(int ticks_late)
         if (cdrom.play_seek_pending)
         {
             Sched_Add(SCHED_EVENT_CDROM,
-                                    global_cycles + 200,
+                                    global_cycles + PLAY_SEEK_POLL_CYCLES,
                                     CDROM_EventCallback);
             return;
         }
@@ -867,7 +868,7 @@ static void CDROM_EventCallback(int ticks_late)
         if (cdrom.cur_lba < DISC_MAX_LBA)
             cdrom.cur_lba++;
         else
-            cdrom.playing = 0; /* TODO: raise hardware-accurate end-of-disc event */
+            cdrom.playing = 0; /* TODO: trigger end-of-disc IRQ (likely INT4/INT5 + status code) */
 
         if (cdrom.playing)
         {

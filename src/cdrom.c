@@ -745,6 +745,12 @@ static void cdrom_deliver_pending(void)
     }
 
     DLOG("Delivering pending INT%d (count=%d)\n", cdrom.pending_int, cdrom.pending_count);
+    if (cdrom.play_seek_pending && cdrom.pending_int == 2 &&
+        cdrom.pending_count > 0 && cdrom.pending_response[0] == 0x82)
+    {
+        cdrom.play_seek_pending = 0;
+        cdrom_set_stat(0x82); /* Transition to Play state when INT2 is delivered */
+    }
     memcpy(cdrom.response_fifo, cdrom.pending_response, cdrom.pending_count);
     cdrom.response_count = cdrom.pending_count;
     cdrom.response_read_pos = 0;
@@ -851,15 +857,17 @@ static void CDROM_EventCallback(int ticks_late)
     {
         if (cdrom.play_seek_pending)
         {
-            cdrom.play_seek_pending = 0;
-            cdrom_set_stat(0x82); /* Playing + Motor On */
+            Sched_Add(SCHED_EVENT_CDROM,
+                                    global_cycles + 200,
+                                    CDROM_EventCallback);
+            return;
         }
 
         /* Track position should progress during CDDA playback so Getloc* works. */
         if (cdrom.cur_lba < DISC_MAX_LBA)
             cdrom.cur_lba++;
         else
-            cdrom.playing = 0; /* End-of-disc fallback */
+            cdrom.playing = 0; /* TODO: raise hardware-accurate end-of-disc event */
 
         if (cdrom.playing)
         {

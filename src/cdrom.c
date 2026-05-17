@@ -103,12 +103,14 @@ static struct
     uint8_t has_loc_header;    /* 1 = GetlocL can return data */
     uint8_t seek_error;        /* 1 = last seek failed */
     uint8_t reading;           /* 1 = ReadN/ReadS in progress */
+    uint8_t playing;           /* 1 = Play (CDDA) in progress */
     uint8_t mode;              /* SetMode value */
     uint8_t disc_present;      /* 0 = no disc (ShellOpen), 1 = disc inserted */
     int32_t read_delay;        /* Cycles until next INT1 delivery (legacy, used for state) */
     int32_t pending_delay;     /* Cycles until pending response delivery (legacy) */
     uint64_t pending_deadline; /* Absolute cycle when pending response becomes ready */
     uint8_t seek_pending;      /* 1 = seek is in progress, waiting for scheduler */
+    uint8_t play_seek_pending; /* 1 = play seek/spinup pending before LBA advances */
     uint8_t location_changed;  /* 1 = SetLoc was issued, first sector gets extra delay */
 
     /* Deferred first response (INT3) — mimics real CD controller latency */
@@ -197,6 +199,7 @@ void CDROM_EjectDisc(void)
 {
     cdrom.disc_present = 0;
     cdrom.reading = 0;
+    cdrom.playing = 0;
     cdrom.stat = 0x01; /* Error (no disc / shell open condition) */
 
     /* Send async INT5 (error) to notify the game */
@@ -314,19 +317,58 @@ static void cdrom_execute_command(uint8_t cmd)
         break;
     }
 
-    case 0x03: /* Play - CDDA audio playback (stub) */
+    case 0x03: /* Play - CDDA audio playback */
     {
-        DLOG("Cmd 03h Play (stub)\n");
+        DLOG("Cmd 03h Play\n");
+        if (!cdrom.disc_present)
+        {
+            /* Shell open / no disc */
+            cdrom.playing = 0;
+            cdrom.reading = 0;
+            cdrom.seek_error = 1;
+            cdrom_set_stat(0x01);
+            resp[0] = cdrom.stat;
+            resp[1] = 0x40;                   /* Missing disc */
+            cdrom_queue_response(resp, 2, 5); /* INT5 */
+            break;
+        }
+
+        cdrom.reading = 0;
+        cdrom.seek_pending = 0;
+        cdrom.playing = 1;
+        cdrom.play_seek_pending = 1;
+        if (cdrom.setloc_lba >= DISC_MAX_LBA)
+        {
+            cdrom.playing = 0;
+            cdrom.play_seek_pending = 0;
+            cdrom.seek_error = 1;
+            cdrom_set_stat(0x04); /* Seek Error */
+            resp[0] = cdrom.stat;
+            cdrom_queue_response(resp, 1, 3); /* INT3 */
+            resp[0] = cdrom.stat;
+            resp[1] = 0x04;
+            cdrom_queue_pending(resp, 2, 5, PENDING_DELAY_SEEKL); /* INT5 */
+            break;
+        }
+        cdrom.seek_error = 0;
         cdrom.cur_lba = cdrom.setloc_lba;
-        cdrom_set_stat(0x82); /* Playing + Motor On */
+        cdrom.has_loc_header = 1;
+        cdrom_set_stat(0x42); /* Seeking + Motor On */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
+        resp[0] = 0x82; /* Playing + Motor On after seek/spinup */
+        cdrom_queue_pending(resp, 1, 2, PENDING_DELAY_SEEKL); /* INT2 */
+        Sched_Add(SCHED_EVENT_CDROM,
+                                global_cycles + PENDING_DELAY_SEEKL,
+                                CDROM_EventCallback);
         break;
     }
 
     case 0x06: /* ReadN - Read with retry */
     {
         DLOG("Cmd 06h ReadN from LBA %" PRIu32 "\n", cdrom.setloc_lba);
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         cdrom.cur_lba = cdrom.setloc_lba;
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
@@ -354,6 +396,8 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x08: /* Stop */
         DLOG("Cmd 08h Stop\n");
         cdrom.reading = 0;
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         cdrom_set_stat(0x00); /* Motor Off */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
@@ -364,6 +408,8 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x09: /* Pause */
         DLOG("Cmd 09h Pause\n");
         cdrom.reading = 0;
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         cdrom_set_stat(0x02); /* Motor On, idle */
         resp[0] = cdrom.stat;
         cdrom_queue_response(resp, 1, 3); /* INT3 */
@@ -376,6 +422,8 @@ static void cdrom_execute_command(uint8_t cmd)
         DLOG("Cmd 0Ah Init\n");
         uint8_t had_header = cdrom.has_loc_header;
         cdrom.reading = 0;
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         cdrom.seek_error = 0;
         cdrom_set_stat(0x02); /* Motor On, idle (preserves ShellOpen if no disc) */
         if (had_header)
@@ -549,6 +597,8 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x16: /* SeekP - Seek (audio mode) */
     {
         DLOG("Cmd %02Xh Seek to LBA %" PRIu32 "\n", cmd, cdrom.setloc_lba);
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         if (cdrom.setloc_lba >= DISC_MAX_LBA)
         {
             /* Out of range - seek error */
@@ -645,6 +695,8 @@ static void cdrom_execute_command(uint8_t cmd)
     case 0x1B: /* ReadS - Read without retry */
     {
         DLOG("Cmd 1Bh ReadS from LBA %" PRIu32 "\n", cdrom.setloc_lba);
+        cdrom.playing = 0;
+        cdrom.play_seek_pending = 0;
         cdrom.cur_lba = cdrom.setloc_lba;
         cdrom.reading = 1;
         cdrom.has_loc_header = 1;
@@ -792,8 +844,31 @@ uint32_t CDROM_Read(uint32_t addr)
 static void CDROM_EventCallback(int ticks_late)
 {
     (void)ticks_late;
-    if (!cdrom.reading)
+    if (!cdrom.reading && !cdrom.playing)
         return;
+
+    if (cdrom.playing)
+    {
+        if (cdrom.play_seek_pending)
+        {
+            cdrom.play_seek_pending = 0;
+            cdrom_set_stat(0x82); /* Playing + Motor On */
+        }
+
+        /* Track position should progress during CDDA playback so Getloc* works. */
+        if (cdrom.cur_lba < DISC_MAX_LBA)
+            cdrom.cur_lba++;
+        else
+            cdrom.playing = 0; /* End-of-disc fallback */
+
+        if (cdrom.playing)
+        {
+            Sched_Add(SCHED_EVENT_CDROM,
+                                    global_cycles + cdrom_read_delay(),
+                                    CDROM_EventCallback);
+        }
+        return;
+    }
 
     /* Phase 1: Seek completion */
     if (cdrom.seek_pending)
@@ -879,7 +954,7 @@ static void CDROM_PendingCallback(int ticks_late)
 /* ---- Schedule a CD-ROM event (public, called from dynarec) ---- */
 void CDROM_ScheduleEvent(void)
 {
-    if (cdrom.reading)
+    if (cdrom.reading || cdrom.playing)
     {
         Sched_Add(SCHED_EVENT_CDROM,
                                 global_cycles + cdrom_read_delay(),

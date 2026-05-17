@@ -1,5 +1,0 @@
-CMake Error at CMakeLists.txt:12 (message):
-  Neither CMAKE_TOOLCHAIN_FILE nor PS2DEV is set.
-
-
--- Configuring incomplete, errors occurred!
